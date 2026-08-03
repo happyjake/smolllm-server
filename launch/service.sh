@@ -11,6 +11,8 @@ readonly BIN_PATH="${BIN_DIR}/smolllm-server"
 readonly CONFIG_DIR="${HOME}/.config/smolllm-server"
 readonly CONFIG_PATH="${CONFIG_DIR}/config.yaml"
 readonly TARGET="${HOME}/Library/LaunchAgents/${PLIST}"
+# Matches server.bind in config.yaml; the port is hardcoded across the smolllm repos.
+readonly HEALTH_URL="http://127.0.0.1:11435/healthz"
 
 usage() {
     cat >&2 <<EOF
@@ -18,7 +20,7 @@ Usage: $0 {install|reinstall|reload|uninstall|start|stop|status|logs|build}
 
   install     Build the binary, seed the config, symlink the plist, and bootstrap the agent.
   reinstall   Tear down and reinstall the agent (use after editing the plist).
-  reload      Rebuild the binary and kickstart the running service.
+  reload      Rebuild the binary, kickstart the service, and wait for /healthz.
   uninstall   Stop the agent and remove the plist symlink. Binary and config are kept.
   start       Bootstrap the agent (no rebuild).
   stop        Bootout the agent.
@@ -94,7 +96,7 @@ is_loaded() {
 bootstrap() {
     echo "→ bootstrapping ${LABEL}"
     launchctl bootstrap "${SESSION}" "${TARGET}"
-    verify_started
+    verify_healthy
 }
 
 bootout() {
@@ -106,16 +108,20 @@ bootout() {
     launchctl bootout "${SESSION}" "${TARGET}" 2>/dev/null || true
 }
 
-verify_started() {
+# A pid alone proves nothing (a dying or hung process still has one); only a
+# 200 from /healthz counts. The 20s window covers the two legal slow paths:
+# graceful shutdown (≤5s + 10s watchdog) and launchd's spawn throttle (10s).
+verify_healthy() {
     local pid
-    for _ in 1 2 3 4 5; do
-        sleep 1
-        if pid=$(launchctl print "${SESSION}/${LABEL}" 2>/dev/null | grep -oE 'pid = [0-9]+' | grep -oE '[0-9]+'); then
-            echo "✓ ${LABEL} running (pid ${pid})"
+    for _ in $(seq 1 20); do
+        if curl -fsS -m 1 -o /dev/null "${HEALTH_URL}" 2>/dev/null; then
+            pid=$(launchctl print "${SESSION}/${LABEL}" 2>/dev/null | grep -oE 'pid = [0-9]+' | grep -oE '[0-9]+' || true)
+            echo "✓ ${LABEL} healthy (pid ${pid:-unknown})"
             return 0
         fi
+        sleep 1
     done
-    echo "✗ ${LABEL} did not start" >&2
+    echo "✗ ${LABEL} not healthy after 20s (${HEALTH_URL})" >&2
     local exit_code
     exit_code=$(launchctl print "${SESSION}/${LABEL}" 2>/dev/null | grep -oE 'last exit code = [0-9-]+' | grep -oE '[0-9-]+$' || echo unknown)
     echo "  last exit code: ${exit_code}" >&2
@@ -156,7 +162,15 @@ cmd_reload() {
     fi
     echo "→ kickstarting ${LABEL}"
     launchctl kickstart -k "${SESSION}/${LABEL}"
-    verify_started
+    if verify_healthy; then
+        return 0
+    fi
+    # The kill already happened; the old process is gone either way. A second
+    # kickstart is the recovery that fixed the 2026-07-20 incident by hand:
+    # -k restarts a hung instance and plain-starts a dead one.
+    echo "→ retrying kickstart ${LABEL}" >&2
+    launchctl kickstart -k "${SESSION}/${LABEL}"
+    verify_healthy
 }
 
 cmd_uninstall() {
@@ -206,16 +220,16 @@ cmd_logs() {
 
 main() {
     case "${1-}" in
-        install)   cmd_install ;;
-        reinstall) cmd_reinstall ;;
-        reload)    cmd_reload ;;
-        uninstall) cmd_uninstall ;;
-        start)     cmd_start ;;
-        stop)      cmd_stop ;;
-        status)    cmd_status ;;
-        logs)      cmd_logs ;;
-        build)     build_binary ;;
-        *)         usage ;;
+    install) cmd_install ;;
+    reinstall) cmd_reinstall ;;
+    reload) cmd_reload ;;
+    uninstall) cmd_uninstall ;;
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    status) cmd_status ;;
+    logs) cmd_logs ;;
+    build) build_binary ;;
+    *) usage ;;
     esac
 }
 
