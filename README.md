@@ -44,7 +44,7 @@ each in order and falls back on error.
 just install      # build, seed config, link plist, bootstrap agent
 just reload       # rebuild + kickstart (full restart; needed for bind changes)
 just uninstall    # bootout + remove symlink (binary & config preserved)
-just logs         # tail /tmp/personal.smolllm-server.log
+just logs         # tail ~/Library/Logs/personal.smolllm-server.log
 ```
 
 ### Hot reload

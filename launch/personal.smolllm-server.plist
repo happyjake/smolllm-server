@@ -22,9 +22,9 @@
         <string>rocry</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/personal.smolllm-server.log</string>
+    <string>/Users/rocry/Library/Logs/personal.smolllm-server.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/personal.smolllm-server.log</string>
+    <string>/Users/rocry/Library/Logs/personal.smolllm-server.log</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
