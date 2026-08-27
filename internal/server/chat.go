@@ -61,7 +61,7 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 				ReasoningContent: resp.Reasoning,
 				ToolCalls:        resp.ToolCalls,
 			},
-			FinishReason: finishReasonOrStop(resp.FinishReason),
+			FinishReason: finishReasonForTurn(resp.FinishReason, len(resp.ToolCalls)),
 		}},
 		Usage: llm.CompletionUsage{
 			PromptTokens:     resp.Usage.InputTokens,
@@ -155,7 +155,7 @@ streamLoop:
 		})
 	}
 
-	finishReason := finishReasonOrStop(stream.FinishReason)
+	finishReason := finishReasonForTurn(stream.FinishReason, len(stream.ToolCalls))
 	writeChunk(w, flusher, llm.ChatCompletionChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []llm.ChatChoiceDelta{{Index: 0, Delta: llm.ChatDelta{}, FinishReason: &finishReason}},
@@ -183,7 +183,19 @@ func resolvedModel(actual, requested string) string {
 	return requested
 }
 
-func finishReasonOrStop(reason string) string {
+// finishReasonForTurn reports the OpenAI-shaped reason for a completed turn.
+//
+// The provider's string passes through untouched except in two cases this
+// endpoint's clients depend on: an absent reason becomes "stop", and a turn that
+// carries tool calls reports "tool_calls" whatever the provider said. Gemini
+// says "stop" while returning tool calls, and an agent loop branching on this
+// field would treat that turn as a final answer and never run the tool. The
+// libraries still surface the provider's reason verbatim; only this
+// OpenAI-compatible surface normalizes it.
+func finishReasonForTurn(reason string, toolCalls int) string {
+	if toolCalls > 0 {
+		return "tool_calls"
+	}
 	if reason == "" {
 		return "stop"
 	}

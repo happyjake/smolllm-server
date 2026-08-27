@@ -125,8 +125,11 @@ JSON never reaches a client. Mainstream OpenAI clients reassemble it fine.
 
 Two things worth knowing before pointing an agent at an alias:
 
-- **`finish_reason` is verbatim.** Gemini reports `stop` while returning tool
-  calls, so key on the presence of `tool_calls`, not on the finish reason.
+- **`finish_reason` is OpenAI-shaped here.** A turn carrying tool calls always
+  reports `tool_calls`, even when the provider said `stop` (Gemini does). The
+  libraries still surface the provider's string verbatim; only this
+  OpenAI-compatible surface normalizes it, so agent loops that branch on the
+  field work unchanged.
 - **Not every leg supports tools.** A leg that rejects them 400s and the chain
   advances; a leg that *ignores* them answers in prose, which no agent loop can
   detect. Use the `agent` alias, whose legs are all verified tool-capable.

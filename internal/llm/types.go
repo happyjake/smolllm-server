@@ -35,6 +35,29 @@ type ChatRequest struct {
 	// Unsupported; presence triggers 400. The legacy functions API is deprecated
 	// upstream and superseded by tools.
 	Functions json.RawMessage `json:"functions,omitempty"`
+
+	// rawMessages keeps the messages exactly as the client sent them. The openai
+	// param union drops keys it does not model, which would silently strip
+	// provider extras (e.g. Gemini thought signatures) from a replayed turn.
+	rawMessages []json.RawMessage
+}
+
+// UnmarshalJSON decodes the request and keeps the raw messages alongside it.
+func (r *ChatRequest) UnmarshalJSON(data []byte) error {
+	type plain ChatRequest // avoid recursing into this method
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var envelope struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	*r = ChatRequest(decoded)
+	r.rawMessages = envelope.Messages
+	return nil
 }
 
 // EmbeddingRequest mirrors POST /v1/embeddings.

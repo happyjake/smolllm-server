@@ -127,7 +127,9 @@ func TestChatCompletions_StreamingEmitsAssembledToolCalls(t *testing.T) {
 		}
 		var chunk llm.ChatCompletionChunk
 		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
-		if strings.Contains(payload, "tool_calls") {
+		// Select on the parsed delta, not on the text: the terminal frame now
+		// carries "tool_calls" as its finish reason.
+		if len(chunk.Choices) > 0 && len(chunk.Choices[0].Delta.ToolCalls) > 0 {
 			rawToolFrame = payload
 		}
 		frames = append(frames, chunk)
@@ -156,7 +158,8 @@ func TestChatCompletions_StreamingEmitsAssembledToolCalls(t *testing.T) {
 	// verbatim reason - Gemini says "stop" while returning tool calls.
 	last := frames[len(frames)-1]
 	require.NotNil(t, last.Choices[0].FinishReason)
-	require.Equal(t, "stop", *last.Choices[0].FinishReason)
+	require.Equal(t, "tool_calls", *last.Choices[0].FinishReason,
+		"Gemini streams \"stop\" with tool calls; agent loops branch on this field")
 	require.Empty(t, last.Choices[0].Delta.ToolCalls)
 }
 
@@ -167,7 +170,8 @@ func TestChatCompletions_ReplaysToolConversationUpstream(t *testing.T) {
 	body := `{"model":"agent","messages":[` +
 		`{"role":"user","content":"weather?"},` +
 		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function",` +
-		`"function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},` +
+		`"function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"},` +
+		`"extra_content":{"google":{"thought_signature":"sig-abc"}}}]},` +
 		`{"role":"tool","tool_call_id":"call_1","content":"{\"temp_c\":18}"}],` + toolsField + `}`
 
 	resp := postChat(t, ts, body)
@@ -181,10 +185,34 @@ func TestChatCompletions_ReplaysToolConversationUpstream(t *testing.T) {
 	assistant, ok := messages[1].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "assistant", assistant["role"])
-	require.Len(t, assistant["tool_calls"], 1)
+	calls, ok := assistant["tool_calls"].([]any)
+	require.True(t, ok)
+	require.Len(t, calls, 1)
+
+	// Gemini expects its thought signature echoed back; a replayed turn that
+	// loses it breaks the next hop of the caller's tool loop.
+	call, ok := calls[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t,
+		map[string]any{"google": map[string]any{"thought_signature": "sig-abc"}},
+		call["extra_content"],
+	)
 
 	toolMsg, ok := messages[2].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "tool", toolMsg["role"])
 	require.Equal(t, "call_1", toolMsg["tool_call_id"])
+}
+
+func TestChatCompletions_ReportsToolCallsFinishReasonWhenProviderSaysStop(t *testing.T) {
+	ts := newToolCallRig(t, "stop", nil)
+
+	resp := postChat(t, ts, `{"model":"agent","messages":[{"role":"user","content":"weather?"}],`+toolsField+`}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var out llm.ChatCompletion
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.Len(t, out.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "tool_calls", out.Choices[0].FinishReason)
 }

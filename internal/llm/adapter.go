@@ -40,6 +40,9 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 	}
 
 	prompt := smolllm.PromptFromMessages(req.Messages)
+	if err := restoreToolCallExtras(prompt.Messages, req.rawMessages); err != nil {
+		return smolllm.Prompt{}, nil, err
+	}
 	if err := prompt.Validate(); err != nil {
 		return smolllm.Prompt{}, nil, err
 	}
@@ -82,6 +85,47 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 		opts = append(opts, smolllm.WithTimeout(time.Duration(*req.Timeout*float64(time.Second))))
 	}
 	return prompt, opts, nil
+}
+
+// restoreToolCallExtras puts back the tool-call keys the openai param union drops
+// while decoding. A caller replaying an assistant turn must reach the provider
+// with it intact — Gemini expects its thought signature echoed back.
+func restoreToolCallExtras(messages []smolllm.Message, raw []json.RawMessage) error {
+	if len(raw) != len(messages) {
+		return nil // nothing to align against; leave the decoded messages alone
+	}
+	for i, rawMessage := range raw {
+		assistant := messages[i].OfAssistant
+		if assistant == nil || len(assistant.ToolCalls) == 0 {
+			continue
+		}
+		var envelope struct {
+			ToolCalls []map[string]json.RawMessage `json:"tool_calls"`
+		}
+		if err := json.Unmarshal(rawMessage, &envelope); err != nil {
+			return fmt.Errorf("decode message #%d tool calls: %w", i, err)
+		}
+		if len(envelope.ToolCalls) != len(assistant.ToolCalls) {
+			continue
+		}
+		for j, rawCall := range envelope.ToolCalls {
+			extra := map[string]any{}
+			for key, value := range rawCall {
+				switch key {
+				case "id", "type", "function", "index":
+				default:
+					extra[key] = value
+				}
+			}
+			if len(extra) == 0 {
+				continue
+			}
+			if fn := assistant.ToolCalls[j].OfFunction; fn != nil {
+				fn.SetExtraFields(extra)
+			}
+		}
+	}
+	return nil
 }
 
 // passThroughFields collects the request fields the server forwards verbatim.

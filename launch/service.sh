@@ -74,6 +74,9 @@ link_plist() {
         exit 1
     fi
     mkdir -p "${HOME}/Library/LaunchAgents"
+    # launchd does not create parents for StandardOutPath: a missing directory
+    # makes the job fail to spawn with no log to explain why.
+    mkdir -p "$(dirname "${LOG_FILE}")"
     if [[ -L "${TARGET}" ]]; then
         local current
         current="$(readlink "${TARGET}")"
