@@ -40,6 +40,14 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 		return
 	}
 
+	// OpenAI reports content as null on an assistant turn that only requested
+	// tool calls; clients key on tool_calls, not on the empty string.
+	var content *string
+	if resp.Text != "" || len(resp.ToolCalls) == 0 {
+		text := resp.Text
+		content = &text
+	}
+
 	out := llm.ChatCompletion{
 		ID:      llm.NewID(),
 		Object:  "chat.completion",
@@ -49,8 +57,9 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 			Index: 0,
 			Message: llm.ChatMessage{
 				Role:             "assistant",
-				Content:          resp.Text,
+				Content:          content,
 				ReasoningContent: resp.Reasoning,
+				ToolCalls:        resp.ToolCalls,
 			},
 			FinishReason: finishReasonOrStop(resp.FinishReason),
 		}},
@@ -131,6 +140,19 @@ streamLoop:
 		})
 		writeRaw(w, flusher, "[DONE]")
 		return
+	}
+
+	// smolllm-go exposes complete calls only, so they arrive here in one frame at
+	// stream end. Mainstream OpenAI clients reassemble a single complete delta.
+	if len(stream.ToolCalls) > 0 {
+		deltas := make([]llm.DeltaToolCall, 0, len(stream.ToolCalls))
+		for i, call := range stream.ToolCalls {
+			deltas = append(deltas, llm.DeltaToolCall{Index: i, Call: call})
+		}
+		writeChunk(w, flusher, llm.ChatCompletionChunk{
+			ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
+			Choices: []llm.ChatChoiceDelta{{Index: 0, Delta: llm.ChatDelta{ToolCalls: deltas}}},
+		})
 	}
 
 	finishReason := finishReasonOrStop(stream.FinishReason)

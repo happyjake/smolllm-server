@@ -26,14 +26,9 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 		return smolllm.Prompt{}, nil, errors.New("messages must not be empty")
 	}
 
-	if !isJSONNullOrEmpty(req.Tools) {
-		return smolllm.Prompt{}, nil, errors.New("tools are not yet supported by smolllm-server")
-	}
 	if !isJSONNullOrEmpty(req.Functions) {
-		return smolllm.Prompt{}, nil, errors.New("functions are not yet supported by smolllm-server")
-	}
-	if !isJSONNullOrEmpty(req.ResponseFormat) {
-		return smolllm.Prompt{}, nil, errors.New("response_format is not yet supported by smolllm-server")
+		return smolllm.Prompt{}, nil, errors.New(
+			"functions are not supported by smolllm-server (the legacy API is superseded by tools)")
 	}
 	if req.N != nil && *req.N != 1 {
 		return smolllm.Prompt{}, nil, fmt.Errorf("n=%d is not supported (only n=1)", *req.N)
@@ -75,6 +70,11 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 	if req.ReasoningEffort != nil && strings.TrimSpace(*req.ReasoningEffort) != "" {
 		opts = append(opts, smolllm.WithReasoningEffort(*req.ReasoningEffort))
 	}
+	// Pass-through fields reach the provider verbatim; the server models none of
+	// them, so a provider error about one surfaces unchanged.
+	if extra := passThroughFields(req); len(extra) > 0 {
+		opts = append(opts, smolllm.WithExtraBody(extra))
+	}
 	if req.Timeout != nil {
 		if *req.Timeout < 0 {
 			return smolllm.Prompt{}, nil, fmt.Errorf("timeout must be >= 0 (got %g)", *req.Timeout)
@@ -82,6 +82,22 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 		opts = append(opts, smolllm.WithTimeout(time.Duration(*req.Timeout*float64(time.Second))))
 	}
 	return prompt, opts, nil
+}
+
+// passThroughFields collects the request fields the server forwards verbatim.
+func passThroughFields(req *ChatRequest) map[string]any {
+	fields := map[string]any{}
+	for name, raw := range map[string]json.RawMessage{
+		"tools":               req.Tools,
+		"tool_choice":         req.ToolChoice,
+		"parallel_tool_calls": req.ParallelToolCalls,
+		"response_format":     req.ResponseFormat,
+	} {
+		if !isJSONNullOrEmpty(raw) {
+			fields[name] = raw
+		}
+	}
+	return fields
 }
 
 func isJSONNullOrEmpty(raw json.RawMessage) bool {

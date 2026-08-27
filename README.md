@@ -112,9 +112,37 @@ curl -fsS http://127.0.0.1:11435/v1/embeddings \
   API key to your access key, and pick `fast`, `translator`, or any
   `provider/model` string.
 
+## Tool calling
+
+`tools`, `tool_choice`, `parallel_tool_calls` and `response_format` are
+pass-through fields: forwarded to the provider verbatim, never modeled here, so
+a provider error about one surfaces unchanged. Assistant messages carrying
+`tool_calls` and `tool` role messages replay as sent.
+
+Streaming emits the assembled `tool_calls` in one delta frame just before the
+terminal frame — the library exposes complete calls only, so partial argument
+JSON never reaches a client. Mainstream OpenAI clients reassemble it fine.
+
+Two things worth knowing before pointing an agent at an alias:
+
+- **`finish_reason` is verbatim.** Gemini reports `stop` while returning tool
+  calls, so key on the presence of `tool_calls`, not on the finish reason.
+- **Not every leg supports tools.** A leg that rejects them 400s and the chain
+  advances; a leg that *ignores* them answers in prose, which no agent loop can
+  detect. Use the `agent` alias, whose legs are all verified tool-capable.
+
+Live probe, 2026-08-27 (`~/.env.smolllm` credentials, both modes):
+
+| leg | tools |
+|---|---|
+| `deepseek/deepseek-v4-flash`, `groq/openai/gpt-oss-120b`, `omlx/Qwen3.8-27B-*`, `jake/glm` | honoured |
+| `gemini/gemini-3.5-flash-lite`, `gemini/gemini-flash-latest` | honoured (streams `finish_reason: stop`) |
+| `groq/groq/compound`, `groq/groq/compound-mini`, `ollama/frob/hy-mt1.5` | 400, chain advances |
+| `codeagentlayer/antigravity/*` | **silently ignored** — answers in prose |
+
 ## Not yet supported
 
-`tools` / `functions` (function calling), `response_format` (JSON mode), `n>1`,
+`functions` (the legacy function-calling API, superseded by `tools`), `n>1`,
 and `/v1/completions` (legacy text completion). Requests using these get a 400.
 
 ## Development

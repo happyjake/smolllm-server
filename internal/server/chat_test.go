@@ -132,7 +132,8 @@ func TestChatCompletions_Blocking(t *testing.T) {
 	require.Equal(t, "chat.completion", out.Object)
 	require.Len(t, out.Choices, 1)
 	require.Equal(t, "assistant", out.Choices[0].Message.Role)
-	require.Equal(t, "42", out.Choices[0].Message.Content)
+	require.NotNil(t, out.Choices[0].Message.Content)
+	require.Equal(t, "42", *out.Choices[0].Message.Content)
 	require.Equal(t, "stop", out.Choices[0].FinishReason)
 	require.Equal(t, 3, out.Usage.PromptTokens)
 	require.Equal(t, 1, out.Usage.CompletionTokens)
@@ -386,10 +387,33 @@ func TestChatCompletions_ReportsProviderFinishReason(t *testing.T) {
 	}
 }
 
-func TestChatCompletions_RejectsTools(t *testing.T) {
+func TestChatCompletions_ForwardsPassThroughFields(t *testing.T) {
+	ts, _ := newTestRig(t, false, func(body map[string]any) {
+		require.Equal(t, "auto", body["tool_choice"])
+		require.Equal(t, false, body["parallel_tool_calls"])
+		require.Equal(t, map[string]any{"type": "json_object"}, body["response_format"])
+		tools, ok := body["tools"].([]any)
+		require.True(t, ok, "tools must reach the provider")
+		require.Len(t, tools, 1)
+	})
+
+	body := `{"model":"fast","messages":[{"role":"user","content":"hi"}],` +
+		`"tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":"auto",` +
+		`"parallel_tool_calls":false,"response_format":{"type":"json_object"}}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer rocry")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestChatCompletions_RejectsLegacyFunctions(t *testing.T) {
 	ts, _ := newTestRig(t, false, nil)
 
-	body := `{"model":"fast","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function"}]}`
+	body := `{"model":"fast","messages":[{"role":"user","content":"hi"}],"functions":[{"name":"f"}]}`
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer rocry")
 	req.Header.Set("Content-Type", "application/json")
@@ -403,7 +427,7 @@ func TestChatCompletions_RejectsTools(t *testing.T) {
 		Error struct{ Message string } `json:"error"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&env))
-	require.Contains(t, env.Error.Message, "tools are not yet supported")
+	require.Contains(t, env.Error.Message, "functions are not supported")
 }
 
 func TestChatCompletions_AuthRequired(t *testing.T) {

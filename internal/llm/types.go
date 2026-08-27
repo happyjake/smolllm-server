@@ -2,8 +2,10 @@ package llm
 
 import (
 	"encoding/json"
+	"fmt"
 
 	openai "github.com/openai/openai-go/v3"
+	"github.com/rocry/smolllm-go/smolllm"
 )
 
 // ChatRequest mirrors the OpenAI Chat Completions request body. Only the fields
@@ -24,10 +26,15 @@ type ChatRequest struct {
 	// When omitted, smolllm-go's default applies.
 	Timeout *float64 `json:"timeout,omitempty"`
 
-	// Unsupported in v1; presence triggers 400.
-	Tools          json.RawMessage `json:"tools,omitempty"`
-	Functions      json.RawMessage `json:"functions,omitempty"`
-	ResponseFormat json.RawMessage `json:"response_format,omitempty"`
+	// Pass-through fields: forwarded to the provider verbatim, never modeled.
+	Tools             json.RawMessage `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
+	ParallelToolCalls json.RawMessage `json:"parallel_tool_calls,omitempty"`
+	ResponseFormat    json.RawMessage `json:"response_format,omitempty"`
+
+	// Unsupported; presence triggers 400. The legacy functions API is deprecated
+	// upstream and superseded by tools.
+	Functions json.RawMessage `json:"functions,omitempty"`
 }
 
 // EmbeddingRequest mirrors POST /v1/embeddings.
@@ -55,9 +62,11 @@ type ChatChoice struct {
 }
 
 type ChatMessage struct {
-	Role             string `json:"role"`
-	Content          string `json:"content"`
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Role string `json:"role"`
+	// Content is null on an assistant turn that only requests tool calls.
+	Content          *string            `json:"content"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	ToolCalls        []smolllm.ToolCall `json:"tool_calls,omitempty"`
 }
 
 type CompletionUsage struct {
@@ -91,6 +100,38 @@ type ChatDelta struct {
 	Role             string `json:"role,omitempty"`
 	Content          string `json:"content,omitempty"`
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// ToolCalls arrive in one frame at stream end: smolllm-go exposes complete
+	// calls only, so there is nothing to emit before then.
+	ToolCalls []DeltaToolCall `json:"tool_calls,omitempty"`
+}
+
+// DeltaToolCall is one assembled tool call in a streamed delta. The index is the
+// call's position, which OpenAI clients use to reassemble.
+type DeltaToolCall struct {
+	Index int
+	Call  smolllm.ToolCall
+}
+
+// MarshalJSON writes the call's own fields with `index` alongside them.
+func (d DeltaToolCall) MarshalJSON() ([]byte, error) {
+	encoded, err := json.Marshal(d.Call)
+	if err != nil {
+		return nil, fmt.Errorf("encode tool call: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, fmt.Errorf("encode tool call index: %w", err)
+	}
+	index, err := json.Marshal(d.Index)
+	if err != nil {
+		return nil, fmt.Errorf("encode tool call index: %w", err)
+	}
+	fields["index"] = index
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode tool call index: %w", err)
+	}
+	return out, nil
 }
 
 // EmbeddingResponse is the OpenAI /v1/embeddings response shape.
