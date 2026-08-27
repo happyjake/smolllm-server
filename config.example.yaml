@@ -17,3 +17,6 @@ aliases:
   translator: ollama/frob/hy-mt1.5:latest,gemini/gemini-flash-lite-latest
   complex: codeagentlayer/droid/kimi-k2.6,codeagentlayer/antigravity/gemini-3.1-pro-high,codeagentlayer/antigravity/gemini-3.1-pro-low,codeagentlayer/droid/glm-5.1,codeagentlayer/droid/gemini-3.1-pro-preview,codeagentlayer/droid/claude-opus-4-7,codeagentlayer/droid/claude-sonnet-4-6,codeagentlayer/antigravity/gemini-3-flash,gemini/gemini-3-flash-preview,gemini/gemini-flash-latest,deepseek/deepseek-v4-flash
   vision: gemini/gemini-flash-latest
+  # Tool calling: every leg here must honour `tools`. A leg that ignores them
+  # answers in prose, which no agent loop can detect.
+  agent: deepseek/deepseek-v4-flash,groq/openai/gpt-oss-120b!low,gemini/gemini-3.5-flash-lite

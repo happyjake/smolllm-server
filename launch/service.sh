@@ -6,6 +6,8 @@ set -euo pipefail
 readonly SESSION="gui/$(id -u)"
 readonly PLIST="personal.smolllm-server.plist"
 readonly LABEL="personal.smolllm-server"
+# Must match StandardOutPath/StandardErrorPath in the plist.
+readonly LOG_FILE="${HOME}/Library/Logs/${LABEL}.log"
 readonly BIN_DIR="${HOME}/.local/bin"
 readonly BIN_PATH="${BIN_DIR}/smolllm-server"
 readonly CONFIG_DIR="${HOME}/.config/smolllm-server"
@@ -125,9 +127,9 @@ verify_healthy() {
     local exit_code
     exit_code=$(launchctl print "${SESSION}/${LABEL}" 2>/dev/null | grep -oE 'last exit code = [0-9-]+' | grep -oE '[0-9-]+$' || echo unknown)
     echo "  last exit code: ${exit_code}" >&2
-    if [[ -f "/tmp/${LABEL}.log" ]]; then
+    if [[ -f "${LOG_FILE}" ]]; then
         echo "  recent log:" >&2
-        tail -20 "/tmp/${LABEL}.log" | sed 's/^/    /' >&2
+        tail -20 "${LOG_FILE}" | sed 's/^/    /' >&2
     fi
     return 1
 }
@@ -210,7 +212,7 @@ cmd_status() {
 }
 
 cmd_logs() {
-    local log="/tmp/${LABEL}.log"
+    local log="${LOG_FILE}"
     if [[ ! -f "${log}" ]]; then
         echo "log not found: ${log}" >&2
         exit 1
