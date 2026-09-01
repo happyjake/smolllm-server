@@ -63,11 +63,7 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 			},
 			FinishReason: finishReasonForTurn(resp.FinishReason, len(resp.ToolCalls)),
 		}},
-		Usage: llm.CompletionUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		},
+		Usage: usageFor(resp.Usage),
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(out); err != nil {
@@ -174,6 +170,23 @@ func writeChunk(w http.ResponseWriter, f http.Flusher, c llm.ChatCompletionChunk
 func writeRaw(w http.ResponseWriter, f http.Flusher, payload string) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
 	f.Flush()
+}
+
+// usageFor maps library usage onto the OpenAI usage object, including prompt
+// caching. Without this the gateway silently discarded cache counts, so an
+// operator had no way to see whether caching was working — or notice it
+// regressing.
+func usageFor(u smolllm.Usage) llm.CompletionUsage {
+	out := llm.CompletionUsage{
+		PromptTokens:             u.InputTokens,
+		CompletionTokens:         u.OutputTokens,
+		TotalTokens:              u.InputTokens + u.OutputTokens,
+		CacheCreationInputTokens: u.CacheWriteTokens,
+	}
+	if u.CacheReadTokens > 0 {
+		out.PromptTokensDetails = &llm.PromptTokensDetails{CachedTokens: u.CacheReadTokens}
+	}
+	return out
 }
 
 func resolvedModel(actual, requested string) string {

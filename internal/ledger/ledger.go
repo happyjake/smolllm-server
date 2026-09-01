@@ -14,15 +14,20 @@ const retention = 31 * 24 * time.Hour
 // Bucket aggregates attempts sharing a UTC day, requested alias, and served
 // provider/model.
 type Bucket struct {
-	Day               string `json:"day"`
-	Alias             string `json:"alias"`
-	Provider          string `json:"provider"`
-	Model             string `json:"model"`
-	Requests          int    `json:"requests"`
-	Failures          int    `json:"failures"`
-	InputTokens       int    `json:"input_tokens"`
-	OutputTokens      int    `json:"output_tokens"`
-	EstimatedRequests int    `json:"estimated_requests"`
+	Day          string `json:"day"`
+	Alias        string `json:"alias"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	Requests     int    `json:"requests"`
+	Failures     int    `json:"failures"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	// CacheReadTokens is the subset of InputTokens the provider served from a
+	// prompt cache; CacheWriteTokens is what it wrote. Both are reported-only,
+	// so a zero means "not reported" as much as "no cache".
+	CacheReadTokens   int `json:"cache_read_tokens"`
+	CacheWriteTokens  int `json:"cache_write_tokens"`
+	EstimatedRequests int `json:"estimated_requests"`
 }
 
 type bucketKey struct {
@@ -73,6 +78,8 @@ func (l *Ledger) Record(alias string, event smolllm.RequestEvent) {
 	}
 	bucket.InputTokens += event.InputTokens
 	bucket.OutputTokens += event.OutputTokens
+	bucket.CacheReadTokens += event.CacheReadTokens
+	bucket.CacheWriteTokens += event.CacheWriteTokens
 	if event.Estimated {
 		bucket.EstimatedRequests++
 	}

@@ -2,6 +2,7 @@
 
 - **Ledger** — Process-local, token-only aggregation of every LLM request attempt. Records successes, failures, reported or estimated token usage; resets on restart.
 - **Stats bucket** — Ledger row keyed by UTC day × requested alias (or raw model string) × served provider/model.
+- **Cache tokens** — Prompt tokens the provider reported as served from (read) or written to (write) its prompt cache. Reported-only: a zero means "the provider said nothing" as much as "no cache", which is why the OpenAI usage object omits the detail object entirely rather than sending a zero. Surfaced per response as `usage.prompt_tokens_details.cached_tokens` and aggregated per Stats bucket, so a hit rate is visible without instrumenting the wire.
 - **Reload** — Redeploy of the service process: rebuild, restart, and accept only on a passing health probe. Required for binary or bind changes; resets the Ledger.
 - **Config hot-reload** — In-process adoption of config.yaml edits (aliases, keys, log level) with no restart; a Reload is never needed for these.
 - **Pass-through field** — A client request field the server forwards to the provider verbatim without modeling it; provider errors about it surface unchanged. Every top-level field the server does not model is forwarded, not just a named few. Three exceptions: `functions` and `n` other than 1 are rejected with a 400, and `stream_options` is dropped (smolllm-go reads it back for stream parsing and usage collection, and panics if a caller sets it — the library requests usage itself).

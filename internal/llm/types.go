@@ -133,6 +133,20 @@ type CompletionUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// PromptTokensDetails is OpenAI's own field for cache reads, so clients
+	// that already understand prompt caching read it without changes. Omitted
+	// entirely when the provider reported no cache data: emitting
+	// {"cached_tokens":0} would assert "nothing was cached" where the truth is
+	// "the provider did not say".
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// CacheCreationInputTokens has no OpenAI equivalent, so it rides as an
+	// Anthropic-style extension. OpenAI clients ignore unknown keys, and
+	// omitempty keeps ordinary responses byte-identical to before.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // ChatCompletionChunk is a single SSE frame for streaming chat.
