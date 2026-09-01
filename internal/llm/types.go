@@ -40,6 +40,30 @@ type ChatRequest struct {
 	// param union drops keys it does not model, which would silently strip
 	// provider extras (e.g. Gemini thought signatures) from a replayed turn.
 	rawMessages []json.RawMessage
+
+	// extraFields holds top-level keys this struct does not model. They are
+	// forwarded to the provider verbatim; see passThroughFields.
+	extraFields map[string]json.RawMessage
+}
+
+// modeledTopLevelKeys are the request fields ChatRequest decodes itself. They are
+// never forwarded through the extra-body path, because the struct already carries
+// them (and, for functions/n, rejects them).
+var modeledTopLevelKeys = map[string]bool{
+	"model": true, "messages": true, "stream": true, "temperature": true,
+	"top_p": true, "reasoning_effort": true, "max_tokens": true, "stop": true,
+	"seed": true, "n": true, "timeout": true, "tools": true, "tool_choice": true,
+	"parallel_tool_calls": true, "response_format": true, "functions": true,
+}
+
+// droppedTopLevelKeys are read back by smolllm-go's own machinery (stream parsing
+// and usage collection), which is why smolllm.WithExtraBody PANICS when asked to
+// set one. Forwarding a client's stream_options would therefore take the process
+// down on the first OpenAI-SDK client that sends it — and those send
+// stream_options:{"include_usage":true} routinely. The library requests usage
+// itself and owns the retry-without-it path, so dropping it loses nothing.
+var droppedTopLevelKeys = map[string]bool{
+	"stream": true, "stream_options": true, "messages": true, "model": true,
 }
 
 // UnmarshalJSON decodes the request and keeps the raw messages alongside it.
@@ -57,6 +81,19 @@ func (r *ChatRequest) UnmarshalJSON(data []byte) error {
 	}
 	*r = ChatRequest(decoded)
 	r.rawMessages = envelope.Messages
+
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	for key := range all {
+		if modeledTopLevelKeys[key] || droppedTopLevelKeys[key] {
+			delete(all, key)
+		}
+	}
+	if len(all) > 0 {
+		r.extraFields = all
+	}
 	return nil
 }
 

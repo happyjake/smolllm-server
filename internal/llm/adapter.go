@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
+	openai "github.com/openai/openai-go/v3"
 	"github.com/rocry/smolllm-go/smolllm"
 )
 
@@ -41,6 +43,9 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 
 	prompt := smolllm.PromptFromMessages(req.Messages)
 	if err := restoreToolCallExtras(prompt.Messages, req.rawMessages); err != nil {
+		return smolllm.Prompt{}, nil, err
+	}
+	if err := restoreMessageExtras(prompt.Messages, req.rawMessages); err != nil {
 		return smolllm.Prompt{}, nil, err
 	}
 	if err := prompt.Validate(); err != nil {
@@ -128,6 +133,137 @@ func restoreToolCallExtras(messages []smolllm.Message, raw []json.RawMessage) er
 	return nil
 }
 
+// extraFieldSetter is implemented by every openai-go message variant: each embeds
+// paramObj, whose SetExtraFields overrides same-named modeled fields at marshal
+// time. Extras must be set on the concrete variant, never on the union wrapper —
+// param.MarshalUnion marshals only the present variant and ignores the wrapper's
+// own metadata whenever one is set.
+type extraFieldSetter interface {
+	SetExtraFields(map[string]any)
+}
+
+func messageVariant(m *openai.ChatCompletionMessageParamUnion) extraFieldSetter {
+	switch {
+	case m.OfDeveloper != nil:
+		return m.OfDeveloper
+	case m.OfSystem != nil:
+		return m.OfSystem
+	case m.OfUser != nil:
+		return m.OfUser
+	case m.OfAssistant != nil:
+		return m.OfAssistant
+	case m.OfTool != nil:
+		return m.OfTool
+	case m.OfFunction != nil:
+		return m.OfFunction
+	}
+	return nil
+}
+
+// restoreMessageExtras re-attaches every top-level message key the openai param
+// union dropped or re-encoded lossily, taken verbatim from what the client sent.
+//
+// The union models only the keys OpenAI documents, so anything else on a message
+// is discarded during decode. That silently broke Anthropic-style prompt caching
+// through OpenAI-compatible providers: a cache_control marker on a system or user
+// content part never reached the provider, so a coding agent re-billed its whole
+// prompt every turn while the markers on tool definitions (which ride the raw-JSON
+// tools path) did survive — caching half-applied, which is worse than off, because
+// the cost accounting silently stops matching reality.
+//
+// Rather than walk the content-part tree (three different part types across the
+// roles, each of which must be reached through its own union), this compares the
+// re-encoded message against the raw one and re-attaches whatever did not survive.
+// A message the union encodes losslessly yields no extras at all, so ordinary
+// traffic is untouched.
+func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) error {
+	if len(raw) != len(messages) {
+		return nil // nothing to align against; leave the decoded messages alone
+	}
+	for i := range messages {
+		variant := messageVariant(&messages[i])
+		if variant == nil {
+			continue
+		}
+		encoded, err := json.Marshal(messages[i])
+		if err != nil {
+			return fmt.Errorf("re-encode message #%d: %w", i, err)
+		}
+		var rawObj, encodedObj map[string]json.RawMessage
+		if err := json.Unmarshal(raw[i], &rawObj); err != nil {
+			return fmt.Errorf("decode message #%d: %w", i, err)
+		}
+		if err := json.Unmarshal(encoded, &encodedObj); err != nil {
+			return fmt.Errorf("decode re-encoded message #%d: %w", i, err)
+		}
+
+		extra := map[string]any{}
+		for key, rawValue := range rawObj {
+			// tool_calls belongs to restoreToolCallExtras, which deliberately
+			// drops the streaming-only "index" key; a verbatim override here
+			// would put it back on the wire.
+			if key == "tool_calls" {
+				continue
+			}
+			encodedValue, ok := encodedObj[key]
+			if !ok || !jsonSubset(rawValue, encodedValue) {
+				extra[key] = rawValue
+			}
+		}
+		if len(extra) > 0 {
+			// SetExtraFields replaces the variant's extras wholesale rather than
+			// accumulating, so this must be a single call with the full map.
+			variant.SetExtraFields(extra)
+		}
+	}
+	return nil
+}
+
+// jsonSubset reports whether everything in want survives in got: same scalars,
+// same-length arrays element-wise, and every object key present with a subset
+// value. Decoding both sides first normalizes number formatting (1 vs 1.0), so a
+// re-encoded message does not look lossy just because it round-tripped.
+func jsonSubset(want, got json.RawMessage) bool {
+	var wantValue, gotValue any
+	if err := json.Unmarshal(want, &wantValue); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		return false
+	}
+	return valueSubset(wantValue, gotValue)
+}
+
+func valueSubset(want, got any) bool {
+	switch wantTyped := want.(type) {
+	case map[string]any:
+		gotTyped, ok := got.(map[string]any)
+		if !ok {
+			return false
+		}
+		for key, wantChild := range wantTyped {
+			gotChild, ok := gotTyped[key]
+			if !ok || !valueSubset(wantChild, gotChild) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		gotTyped, ok := got.([]any)
+		if !ok || len(gotTyped) != len(wantTyped) {
+			return false
+		}
+		for i := range wantTyped {
+			if !valueSubset(wantTyped[i], gotTyped[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(want, got)
+	}
+}
+
 // passThroughFields collects the request fields the server forwards verbatim.
 func passThroughFields(req *ChatRequest) map[string]any {
 	fields := map[string]any{}
@@ -140,6 +276,15 @@ func passThroughFields(req *ChatRequest) map[string]any {
 		if !isJSONNullOrEmpty(raw) {
 			fields[name] = raw
 		}
+	}
+	// Top-level keys the server does not model reach the provider unchanged.
+	// UnmarshalJSON has already removed the modeled ones and the reserved ones
+	// smolllm.WithExtraBody would panic on.
+	for name, raw := range req.extraFields {
+		if _, taken := fields[name]; taken {
+			continue
+		}
+		fields[name] = raw
 	}
 	return fields
 }
