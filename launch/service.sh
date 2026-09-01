@@ -6,15 +6,39 @@ set -euo pipefail
 readonly SESSION="gui/$(id -u)"
 readonly PLIST="personal.smolllm-server.plist"
 readonly LABEL="personal.smolllm-server"
-# Must match StandardOutPath/StandardErrorPath in the plist.
+# Every path below is derived from the invoking user's $HOME. Nothing in this
+# repo may hardcode a username: the rendered plist is per-machine, and the
+# template it comes from is checked in with @PLACEHOLDER@ markers instead.
+readonly RUN_USER="${USER:-$(id -un)}"
+# Must match StandardOutPath/StandardErrorPath rendered into the plist.
 readonly LOG_FILE="${HOME}/Library/Logs/${LABEL}.log"
 readonly BIN_DIR="${HOME}/.local/bin"
 readonly BIN_PATH="${BIN_DIR}/smolllm-server"
 readonly CONFIG_DIR="${HOME}/.config/smolllm-server"
 readonly CONFIG_PATH="${CONFIG_DIR}/config.yaml"
 readonly TARGET="${HOME}/Library/LaunchAgents/${PLIST}"
-# Matches server.bind in config.yaml; the port is hardcoded across the smolllm repos.
-readonly HEALTH_URL="http://127.0.0.1:11435/healthz"
+readonly TEMPLATE_NAME="${PLIST}.template"
+
+# health_url reads server.bind out of the live config so a non-default port
+# still gets probed. A wildcard bind is probed over loopback: 0.0.0.0 is not a
+# connectable address on macOS.
+health_url() {
+    if [[ -n "${SMOLLLM_HEALTH_URL:-}" ]]; then
+        printf '%s' "${SMOLLLM_HEALTH_URL}"
+        return 0
+    fi
+    local bind="" host port
+    if [[ -f "${CONFIG_PATH}" ]]; then
+        bind="$(sed -nE 's/^[[:space:]]*bind:[[:space:]]*"?([^"[:space:]#]+)"?.*/\1/p' "${CONFIG_PATH}" | head -1)"
+    fi
+    bind="${bind:-127.0.0.1:11435}"
+    port="${bind##*:}"
+    host="${bind%:*}"
+    case "${host}" in
+    "" | "0.0.0.0" | "::" | "[::]") host="127.0.0.1" ;;
+    esac
+    printf 'http://%s:%s/healthz' "${host}" "${port}"
+}
 
 usage() {
     cat >&2 <<EOF
@@ -41,6 +65,16 @@ resolve_repo_root() {
 
 build_binary() {
     local repo
+    # Hosts without a Go toolchain (or with the binary cross-compiled elsewhere
+    # and copied in) skip the build and use whatever is already at BIN_PATH.
+    if [[ "${SMOLLLM_SKIP_BUILD:-0}" == "1" ]]; then
+        if [[ ! -x "${BIN_PATH}" ]]; then
+            echo "SMOLLLM_SKIP_BUILD=1 but no executable at ${BIN_PATH}" >&2
+            exit 1
+        fi
+        echo "  SMOLLLM_SKIP_BUILD=1: using existing ${BIN_PATH}"
+        return 0
+    fi
     repo="$(resolve_repo_root)"
     mkdir -p "${BIN_DIR}"
     echo "→ building ${BIN_PATH} (from ${repo})"
@@ -65,33 +99,58 @@ seed_config() {
     echo "✓ seeded ${CONFIG_PATH} from config.example.yaml"
 }
 
-link_plist() {
-    local source repo
+# render_plist substitutes the current machine's paths into the checked-in
+# template and writes a REAL file to ~/Library/LaunchAgents.
+#
+# It is not a symlink: a symlinked plist ties the loaded job to the repo's
+# location on disk, and the previous checked-in plist hardcoded one developer's
+# home directory, so `install` on any other account bootstrapped a job pointing
+# at a binary that did not exist.
+#
+# Substitution is bash parameter expansion, not sed: home directories and repo
+# paths may contain characters (&, \, |) that sed would interpret in the
+# replacement text.
+render_plist() {
+    local repo template rendered line
     repo="$(resolve_repo_root)"
-    source="${repo}/launch/${PLIST}"
-    if [[ ! -f "${source}" ]]; then
-        echo "Source plist not found: ${source}" >&2
+    template="${repo}/launch/${TEMPLATE_NAME}"
+    if [[ ! -f "${template}" ]]; then
+        echo "Plist template not found: ${template}" >&2
         exit 1
     fi
     mkdir -p "${HOME}/Library/LaunchAgents"
     # launchd does not create parents for StandardOutPath: a missing directory
     # makes the job fail to spawn with no log to explain why.
     mkdir -p "$(dirname "${LOG_FILE}")"
-    if [[ -L "${TARGET}" ]]; then
-        local current
-        current="$(readlink "${TARGET}")"
-        if [[ "${current}" == "${source}" ]]; then
-            echo "  plist symlink already correct: ${TARGET}"
-            return 0
-        fi
-        echo "  updating plist symlink (was: ${current})"
-        rm -f "${TARGET}"
-    elif [[ -e "${TARGET}" ]]; then
-        echo "  replacing existing plist file with symlink"
-        rm -f "${TARGET}"
+
+    rendered="$(mktemp "${TMPDIR:-/tmp}/smolllm-plist.XXXXXX")"
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        line="${line//@BIN_PATH@/${BIN_PATH}}"
+        line="${line//@WORKING_DIR@/${repo}}"
+        line="${line//@CONFIG_PATH@/${CONFIG_PATH}}"
+        line="${line//@LOG_FILE@/${LOG_FILE}}"
+        line="${line//@HOME@/${HOME}}"
+        line="${line//@USER@/${RUN_USER}}"
+        printf '%s\n' "${line}" >>"${rendered}"
+    done <"${template}"
+
+    if ! plutil -lint "${rendered}" >/dev/null 2>&1; then
+        echo "Rendered plist is not valid: ${rendered}" >&2
+        exit 1
     fi
-    ln -sf "${source}" "${TARGET}"
-    echo "✓ linked ${TARGET} → ${source}"
+
+    if [[ -f "${TARGET}" && ! -L "${TARGET}" ]] && cmp -s "${rendered}" "${TARGET}"; then
+        rm -f "${rendered}"
+        echo "  plist already current: ${TARGET}"
+        return 0
+    fi
+    if [[ -L "${TARGET}" ]]; then
+        echo "  replacing legacy plist symlink with a rendered file"
+    fi
+    rm -f "${TARGET}"
+    mv "${rendered}" "${TARGET}"
+    chmod 644 "${TARGET}"
+    echo "✓ rendered ${TARGET} (user ${RUN_USER}, bin ${BIN_PATH})"
 }
 
 is_loaded() {
@@ -119,14 +178,14 @@ bootout() {
 verify_healthy() {
     local pid
     for _ in $(seq 1 20); do
-        if curl -fsS -m 1 -o /dev/null "${HEALTH_URL}" 2>/dev/null; then
+        if curl -fsS -m 1 -o /dev/null "$(health_url)" 2>/dev/null; then
             pid=$(launchctl print "${SESSION}/${LABEL}" 2>/dev/null | grep -oE 'pid = [0-9]+' | grep -oE '[0-9]+' || true)
             echo "✓ ${LABEL} healthy (pid ${pid:-unknown})"
             return 0
         fi
         sleep 1
     done
-    echo "✗ ${LABEL} not healthy after 20s (${HEALTH_URL})" >&2
+    echo "✗ ${LABEL} not healthy after 20s ($(health_url))" >&2
     local exit_code
     exit_code=$(launchctl print "${SESSION}/${LABEL}" 2>/dev/null | grep -oE 'last exit code = [0-9-]+' | grep -oE '[0-9-]+$' || echo unknown)
     echo "  last exit code: ${exit_code}" >&2
@@ -140,7 +199,7 @@ verify_healthy() {
 cmd_install() {
     build_binary
     seed_config
-    link_plist
+    render_plist
     if is_loaded; then
         echo "  ${LABEL} already loaded; use 'reload' to apply binary changes"
         return 0
@@ -153,7 +212,7 @@ cmd_reinstall() {
     seed_config
     bootout
     rm -f "${TARGET}"
-    link_plist
+    render_plist
     bootstrap
 }
 
@@ -161,7 +220,7 @@ cmd_reload() {
     build_binary
     if ! is_loaded; then
         echo "  ${LABEL} not loaded; bootstrapping"
-        link_plist
+        render_plist
         bootstrap
         return 0
     fi
@@ -193,7 +252,7 @@ cmd_start() {
         echo "${LABEL} already loaded"
         return 0
     fi
-    link_plist
+    render_plist
     bootstrap
 }
 

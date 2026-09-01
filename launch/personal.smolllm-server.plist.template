@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Generated from launch/personal.smolllm-server.plist.template by
+  launch/service.sh. Do not edit the copy in ~/Library/LaunchAgents: it is
+  overwritten on every install. Edit the template and run `just reinstall`
+  (launchd caches the plist at bootstrap, so a plain reload will not pick up
+  a plist change).
+
+  Paths are substituted per machine because launchd expands neither ~ nor
+  $HOME — every path must be absolute by the time launchd reads it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>personal.smolllm-server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@BIN_PATH@</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@WORKING_DIR@</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>@HOME@</string>
+        <key>PATH</key>
+        <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>SMOLLLM_SERVER_CONFIG</key>
+        <string>@CONFIG_PATH@</string>
+        <key>USER</key>
+        <string>@USER@</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>@LOG_FILE@</string>
+    <key>StandardErrorPath</key>
+    <string>@LOG_FILE@</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>

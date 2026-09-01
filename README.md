@@ -41,11 +41,37 @@ each in order and falls back on error.
 ## Install / run
 
 ```bash
-just install      # build, seed config, link plist, bootstrap agent
+just install      # build, seed config, render plist, bootstrap agent
 just reload       # rebuild + kickstart (full restart; needed for bind changes)
-just uninstall    # bootout + remove symlink (binary & config preserved)
+just reinstall    # bootout + re-render plist + bootstrap (needed after plist edits)
+just uninstall    # bootout + remove plist (binary & config preserved)
 just logs         # tail ~/Library/Logs/personal.smolllm-server.log
 ```
+
+The LaunchAgent plist is **rendered per machine** from
+`launch/personal.smolllm-server.plist.template`, substituting `$HOME`, `$USER`,
+the binary path, the repo path, and the config path. Nothing in this repo
+hardcodes a username. The rendered file is written to
+`~/Library/LaunchAgents/` as a real file rather than a symlink, so the loaded
+job does not break when the repo moves; a legacy symlink left by an older
+install is replaced automatically.
+
+### Hosts without a Go toolchain
+
+Cross-compile elsewhere and skip the build step — the service scripts then use
+whatever binary is already at `~/.local/bin/smolllm-server`:
+
+```bash
+# on a machine with Go, same GOOS/GOARCH as the target
+GOOS=darwin GOARCH=arm64 go build -o smolllm-server ./cmd/server
+scp smolllm-server target:~/.local/bin/
+
+# on the target (no Go, no just needed — service.sh is plain bash)
+SMOLLLM_SKIP_BUILD=1 bash launch/service.sh install
+```
+
+`SMOLLLM_SKIP_BUILD=1` fails loudly if no executable is present, so it can
+never bootstrap a job pointing at a missing binary.
 
 ### Hot reload
 
@@ -57,8 +83,14 @@ previous snapshot is retained.
 
 For `server.bind` changes, or to force a clean restart, run `just reload`.
 
-The agent runs at `0.0.0.0:11435` (all interfaces, LAN-accessible) and reads
-`~/.env.smolllm` itself on startup — no wrapper script.
+The shipped example binds `127.0.0.1:11435`. The access key is the only gate
+in front of every provider key on the box, so widen the bind to `0.0.0.0`
+deliberately, not by inheriting a default. The agent reads `~/.env.smolllm`
+itself on startup — no wrapper script.
+
+The health probe used by `install`/`reload` reads `server.bind` out of the live
+config (a wildcard bind is probed over loopback), so a non-default port needs no
+script edit. `SMOLLLM_HEALTH_URL` overrides it outright.
 
 ## Endpoints
 
