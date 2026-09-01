@@ -27,7 +27,8 @@ func (h *handlers) chat(w http.ResponseWriter, r *http.Request) {
 	opts = append(opts, smolllm.WithHook(h.ledger.Hook(req.Model)))
 
 	if req.Stream {
-		h.chatStream(w, r, prompt, opts)
+		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+		h.chatStream(w, r, prompt, opts, includeUsage)
 		return
 	}
 	h.chatBlocking(w, r, prompt, opts, req.Model)
@@ -71,7 +72,9 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 	}
 }
 
-func (h *handlers) chatStream(w http.ResponseWriter, r *http.Request, prompt smolllm.Prompt, opts []smolllm.Option) {
+func (h *handlers) chatStream(
+	w http.ResponseWriter, r *http.Request, prompt smolllm.Prompt, opts []smolllm.Option, includeUsage bool,
+) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		upstreamError(w, errors.New("streaming not supported by this server"))
@@ -156,6 +159,15 @@ streamLoop:
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []llm.ChatChoiceDelta{{Index: 0, Delta: llm.ChatDelta{}, FinishReason: &finishReason}},
 	})
+	// OpenAI sends usage in a final frame with an empty choices array, only when
+	// the client asked for it.
+	if includeUsage {
+		usage := usageFor(stream.Usage)
+		writeChunk(w, flusher, llm.ChatCompletionChunk{
+			ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
+			Choices: []llm.ChatChoiceDelta{}, Usage: &usage,
+		})
+	}
 	writeRaw(w, flusher, "[DONE]")
 }
 

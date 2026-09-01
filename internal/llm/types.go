@@ -32,6 +32,13 @@ type ChatRequest struct {
 	ParallelToolCalls json.RawMessage `json:"parallel_tool_calls,omitempty"`
 	ResponseFormat    json.RawMessage `json:"response_format,omitempty"`
 
+	// StreamOptions is consumed by this server rather than forwarded: the
+	// library manages upstream stream usage itself, and smolllm.WithExtraBody
+	// panics if handed this key. Only include_usage is honoured.
+	StreamOptions *struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options,omitempty"`
+
 	// Unsupported; presence triggers 400. The legacy functions API is deprecated
 	// upstream and superseded by tools.
 	Functions json.RawMessage `json:"functions,omitempty"`
@@ -156,7 +163,12 @@ type ChatCompletionChunk struct {
 	Created int64             `json:"created"`
 	Model   string            `json:"model"`
 	Choices []ChatChoiceDelta `json:"choices"`
-	Error   *ChatStreamError  `json:"error,omitempty"`
+	// Usage rides the terminal frame when the client asked for it, matching
+	// OpenAI's stream_options.include_usage. Without it a streaming client can
+	// never see token counts — cache reads included — which is the transport
+	// coding agents actually use.
+	Usage *CompletionUsage `json:"usage,omitempty"`
+	Error *ChatStreamError `json:"error,omitempty"`
 }
 
 type ChatStreamError struct {

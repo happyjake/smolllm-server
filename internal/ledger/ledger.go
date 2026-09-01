@@ -25,9 +25,15 @@ type Bucket struct {
 	// CacheReadTokens is the subset of InputTokens the provider served from a
 	// prompt cache; CacheWriteTokens is what it wrote. Both are reported-only,
 	// so a zero means "not reported" as much as "no cache".
-	CacheReadTokens   int `json:"cache_read_tokens"`
-	CacheWriteTokens  int `json:"cache_write_tokens"`
-	EstimatedRequests int `json:"estimated_requests"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	// CacheReportedRequests and CacheReportedInputTokens bound the denominator
+	// for a hit rate. Without them, one call reporting 80/100 cached and one
+	// reporting nothing average to 80/200 — a confident 40% assembled partly
+	// from data that does not exist.
+	CacheReportedRequests    int `json:"cache_reported_requests"`
+	CacheReportedInputTokens int `json:"cache_reported_input_tokens"`
+	EstimatedRequests        int `json:"estimated_requests"`
 }
 
 type bucketKey struct {
@@ -80,6 +86,10 @@ func (l *Ledger) Record(alias string, event smolllm.RequestEvent) {
 	bucket.OutputTokens += event.OutputTokens
 	bucket.CacheReadTokens += event.CacheReadTokens
 	bucket.CacheWriteTokens += event.CacheWriteTokens
+	if event.CacheReported {
+		bucket.CacheReportedRequests++
+		bucket.CacheReportedInputTokens += event.InputTokens
+	}
 	if event.Estimated {
 		bucket.EstimatedRequests++
 	}

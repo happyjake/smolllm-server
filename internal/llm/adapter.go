@@ -199,10 +199,13 @@ func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) err
 
 		extra := map[string]any{}
 		for key, rawValue := range rawObj {
-			// tool_calls belongs to restoreToolCallExtras, which deliberately
-			// drops the streaming-only "index" key; a verbatim override here
-			// would put it back on the wire.
-			if key == "tool_calls" {
+			// tool_calls belongs to restoreToolCallExtras whenever there are
+			// calls to own: it deliberately drops the streaming-only "index"
+			// key, which a verbatim override here would put back on the wire.
+			// When the union decoded no calls the raw value is null or [], which
+			// that restorer skips entirely, so it is forwarded here instead —
+			// otherwise the key vanishes from a message that explicitly sent it.
+			if key == "tool_calls" && decodedToolCallCount(&messages[i]) > 0 {
 				continue
 			}
 			encodedValue, ok := encodedObj[key]
@@ -217,6 +220,15 @@ func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) err
 		}
 	}
 	return nil
+}
+
+// decodedToolCallCount reports how many tool calls survived decoding onto the
+// assistant variant; other roles never carry any.
+func decodedToolCallCount(m *openai.ChatCompletionMessageParamUnion) int {
+	if m.OfAssistant == nil {
+		return 0
+	}
+	return len(m.OfAssistant.ToolCalls)
 }
 
 // jsonSubset reports whether everything in want survives in got: same scalars,

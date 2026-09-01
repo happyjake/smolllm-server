@@ -2,6 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,4 +52,62 @@ func TestLedgerAggregatesCacheTokens(t *testing.T) {
 	require.Equal(t, 170, buckets[0].CacheReadTokens)
 	require.Equal(t, 2, buckets[0].CacheWriteTokens)
 	require.Equal(t, 200, buckets[0].InputTokens)
+}
+
+// A streaming client that asked for usage must receive it. Coding agents stream,
+// so without this frame cache accounting is invisible on the transport that
+// matters most.
+func TestStreamingEmitsUsageWhenRequested(t *testing.T) {
+	ts, _ := newTestRig(t, true)
+	resp := postChat(t, ts, `{"model":"fast","stream":true,"stream_options":{"include_usage":true},
+		"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var usageFrames int
+	for _, line := range strings.Split(string(body), "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || strings.TrimSpace(payload) == "[DONE]" {
+			continue
+		}
+		var chunk map[string]any
+		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
+		if _, has := chunk["usage"]; has {
+			usageFrames++
+		}
+	}
+	require.Equal(t, 1, usageFrames, "expected exactly one usage frame before [DONE]")
+}
+
+// Without include_usage the stream must stay byte-compatible with before.
+func TestStreamingOmitsUsageByDefault(t *testing.T) {
+	ts, _ := newTestRig(t, true)
+	resp := postChat(t, ts, `{"model":"fast","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), `"usage"`)
+}
+
+// tool_calls: [] and null are meaningful to some providers; the key must not be
+// dropped just because the union decoded no calls.
+func TestEmptyToolCallsSurviveToProvider(t *testing.T) {
+	for _, raw := range []string{`[]`, `null`} {
+		t.Run(raw, func(t *testing.T) {
+			var got map[string]any
+			ts, _ := newTestRig(t, false, func(body map[string]any) { got = body })
+			resp := postChat(t, ts, `{"model":"fast","messages":[
+				{"role":"user","content":"hi"},
+				{"role":"assistant","content":"sure","tool_calls":`+raw+`}]}`)
+			defer resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+
+			assistant := got["messages"].([]any)[1].(map[string]any)
+			require.Contains(t, assistant, "tool_calls",
+				"an explicitly sent tool_calls key must reach the provider")
+		})
+	}
 }
