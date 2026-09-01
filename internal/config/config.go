@@ -32,6 +32,12 @@ type ServerConfig struct {
 	AccessKey string `yaml:"access_key"`
 	EnvFile   string `yaml:"env_file"`
 	LogLevel  string `yaml:"log_level"`
+	// RequestTimeout bounds one upstream attempt in seconds, applied only when
+	// the client did not send a `timeout` field. Without it a hung (not
+	// failed) leg holds the chain for the library default (600s) before
+	// fallback advances — a dead-but-hanging provider would pin every request
+	// to leg 1. 0 keeps the library default.
+	RequestTimeout float64 `yaml:"request_timeout"`
 }
 
 // Load reads YAML from path, applies env overrides and defaults, and validates.
@@ -93,6 +99,9 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "warning", "error":
 	default:
 		return fmt.Errorf("invalid server.log_level %q (want debug|info|warn|error)", c.Server.LogLevel)
+	}
+	if c.Server.RequestTimeout < 0 {
+		return fmt.Errorf("server.request_timeout must be >= 0 seconds (got %g)", c.Server.RequestTimeout)
 	}
 	for name, value := range c.Aliases {
 		if strings.TrimSpace(name) == "" {

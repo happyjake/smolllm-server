@@ -17,7 +17,10 @@ import (
 // BuildOptions converts an incoming ChatRequest into smolllm options.
 // `aliasResolve` should map an alias name to a comma-separated chain or return
 // the input unchanged if no alias applies (typically *config.Config.ResolveModel).
-func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.Prompt, []smolllm.Option, error) {
+// `defaultTimeoutSec` is the server-configured per-attempt bound, applied only
+// when the request carries no explicit `timeout` (client always wins); <= 0
+// leaves the library default in place.
+func BuildOptions(req *ChatRequest, aliasResolve func(string) string, defaultTimeoutSec float64) (smolllm.Prompt, []smolllm.Option, error) {
 	if req == nil {
 		return smolllm.Prompt{}, nil, errors.New("request must not be nil")
 	}
@@ -88,6 +91,8 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string) (smolllm.P
 			return smolllm.Prompt{}, nil, fmt.Errorf("timeout must be >= 0 (got %g)", *req.Timeout)
 		}
 		opts = append(opts, smolllm.WithTimeout(time.Duration(*req.Timeout*float64(time.Second))))
+	} else if defaultTimeoutSec > 0 {
+		opts = append(opts, smolllm.WithTimeout(time.Duration(defaultTimeoutSec*float64(time.Second))))
 	}
 	return prompt, opts, nil
 }

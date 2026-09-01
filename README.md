@@ -38,6 +38,21 @@ aliases:
 Aliases pass straight through to smolllm-go's `WithModel("a,b,c")`, which tries
 each in order and falls back on error.
 
+### Fallback semantics (what counts as "down")
+
+- **429** falls through to the next leg immediately (no retry — the quota is
+  exhausted, waiting helps nobody).
+- **500/502/503/529** retry the same leg 3× (1s/2s/4s backoff), then advance.
+- Any other error (400s, network, timeout) advances the chain at once.
+- A **hung** leg is bounded by `server.request_timeout` (per attempt; the
+  client `timeout` field overrides it) — set this, or a dead-but-silent
+  provider pins requests for the 600s library default before switching.
+- An empty answer, a turn truncated mid-tool-call, and reasoning that ate the
+  whole output budget all fail the leg too — the chain routes around them.
+- What never triggers fallback: a leg that answers *plausibly but badly*
+  (ignoring `tools`, dropping an image). Probe every leg before trusting it
+  (see "Choosing alias chains").
+
 ## Install / run
 
 ```bash

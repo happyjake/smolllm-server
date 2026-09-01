@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocry/smolllm-server/internal/config"
 	"github.com/rocry/smolllm-server/internal/llm"
@@ -501,4 +502,70 @@ func TestChatCompletions_RejectsNonPositiveMaxTokens(t *testing.T) {
 			require.Contains(t, env.Error.Message, "max_tokens must be positive")
 		})
 	}
+}
+
+// newHangingRig hosts an upstream that never answers within the test's
+// patience, so the only thing that can end the request is a timeout —
+// either the server default or the client's explicit `timeout` field.
+func newHangingRig(t *testing.T, requestTimeout float64) *httptest.Server {
+	t.Helper()
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hang until the caller's deadline cancels us OR the test releases us
+		// (the cancel drops the attempt but the upstream TCP conn can linger,
+		// which would otherwise block httptest cleanup).
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release); upstream.Close() })
+
+	t.Setenv("MOCK_BASE_URL", upstream.URL)
+	t.Setenv("MOCK_API_KEY", "secret-mock-key")
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{
+			Bind:           "127.0.0.1:0",
+			AccessKey:      "rocry",
+			LogLevel:       "warn",
+			RequestTimeout: requestTimeout,
+		},
+		Aliases: map[string]string{"fast": "mock/marvin-7b"},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := config.NewStore("", cfg)
+	srv := New(store, logger)
+	ts := httptest.NewServer(srv.HTTP.Handler)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func postChatTimed(t *testing.T, ts *httptest.Server, body string) (int, time.Duration) {
+	t.Helper()
+	start := time.Now()
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer rocry")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, time.Since(start)
+}
+
+func TestChatCompletions_ServerDefaultTimeoutBoundsHungLeg(t *testing.T) {
+	ts := newHangingRig(t, 0.3)
+	code, elapsed := postChatTimed(t, ts, `{"model":"fast","messages":[{"role":"user","content":"hi"}]}`)
+	require.Equal(t, http.StatusBadGateway, code)
+	// Library default is 600s; the server default must end the attempt ~0.3s.
+	require.Less(t, elapsed, 5*time.Second)
+}
+
+func TestChatCompletions_ClientTimeoutOverridesServerDefault(t *testing.T) {
+	ts := newHangingRig(t, 30) // server default far larger than the client's
+	code, elapsed := postChatTimed(t, ts, `{"model":"fast","timeout":0.3,"messages":[{"role":"user","content":"hi"}]}`)
+	require.Equal(t, http.StatusBadGateway, code)
+	require.Less(t, elapsed, 5*time.Second)
 }

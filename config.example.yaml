@@ -10,6 +10,11 @@ server:
   # Loaded at startup; existing env vars are NOT overwritten.
   env_file: ~/.env.smolllm
   log_level: info  # debug | info | warn | error
+  # Bounds one upstream attempt (seconds). Without it a HUNG leg holds the
+  # chain for the library default (600s) before fallback advances — a dead
+  # provider would pin every request to leg 1. A client `timeout` field
+  # overrides this. 0 / absent = library default. Hot-reloads.
+  request_timeout: 90
 
 # Aliases map a logical name to a comma-separated provider/model fallback chain.
 # smolllm-go tries each entry in order and falls back on errors.
