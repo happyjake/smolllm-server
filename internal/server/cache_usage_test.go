@@ -27,11 +27,23 @@ func TestUsageForOmitsCacheDetailsWhenNotReported(t *testing.T) {
 
 	reported := usageFor(smolllm.Usage{
 		InputTokens: 100, OutputTokens: 5, CacheReadTokens: 80, CacheWriteTokens: 20,
+		CacheReadReported: true, CacheWriteReported: true,
 	})
 	require.NotNil(t, reported.PromptTokensDetails)
 	require.Equal(t, 80, reported.PromptTokensDetails.CachedTokens)
 	require.Equal(t, 20, reported.CacheCreationInputTokens)
 	require.Equal(t, 105, reported.TotalTokens)
+
+	// An explicit zero is a real answer — this call missed — and must be
+	// distinguishable from the provider saying nothing at all.
+	explicitMiss := usageFor(smolllm.Usage{
+		InputTokens: 100, OutputTokens: 5, CacheReadTokens: 0, CacheReadReported: true,
+	})
+	require.NotNil(t, explicitMiss.PromptTokensDetails)
+	require.Equal(t, 0, explicitMiss.PromptTokensDetails.CachedTokens)
+	encodedMiss, err := json.Marshal(explicitMiss)
+	require.NoError(t, err)
+	require.Contains(t, string(encodedMiss), `"cached_tokens":0`)
 }
 
 func TestLedgerAggregatesCacheTokens(t *testing.T) {
@@ -41,6 +53,7 @@ func TestLedgerAggregatesCacheTokens(t *testing.T) {
 			Usage: smolllm.Usage{
 				Provider: "p", ModelName: "m", InputTokens: 100, OutputTokens: 5,
 				CacheReadTokens: read, CacheWriteTokens: 1,
+				CacheReadReported: true, CacheWriteReported: true,
 			},
 			// A zero Timestamp buckets to year 0001 and is pruned immediately by
 			// the ledger's 31-day retention.
@@ -52,6 +65,21 @@ func TestLedgerAggregatesCacheTokens(t *testing.T) {
 	require.Equal(t, 170, buckets[0].CacheReadTokens)
 	require.Equal(t, 2, buckets[0].CacheWriteTokens)
 	require.Equal(t, 200, buckets[0].InputTokens)
+	require.Equal(t, 2, buckets[0].CacheReportedRequests)
+	require.Equal(t, 200, buckets[0].CacheReportedInputTokens)
+
+	// A provider that reported only WRITES has said nothing about reads, so it
+	// must not enlarge the read denominator.
+	l.Record("fast", smolllm.RequestEvent{
+		Usage: smolllm.Usage{
+			Provider: "p", ModelName: "m", InputTokens: 100,
+			CacheWriteTokens: 5, CacheWriteReported: true,
+		},
+		Timestamp: time.Now().UTC(),
+	})
+	buckets = l.Snapshot()
+	require.Equal(t, 2, buckets[0].CacheReportedRequests, "write-only reporting is not read coverage")
+	require.Equal(t, 200, buckets[0].CacheReportedInputTokens)
 }
 
 // A streaming client that asked for usage must receive it. Coding agents stream,

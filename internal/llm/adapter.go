@@ -205,7 +205,7 @@ func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) err
 			// When the union decoded no calls the raw value is null or [], which
 			// that restorer skips entirely, so it is forwarded here instead —
 			// otherwise the key vanishes from a message that explicitly sent it.
-			if key == "tool_calls" && decodedToolCallCount(&messages[i]) > 0 {
+			if key == "tool_calls" && restorerOwnsToolCalls(&messages[i]) {
 				continue
 			}
 			encodedValue, ok := encodedObj[key]
@@ -222,13 +222,25 @@ func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) err
 	return nil
 }
 
-// decodedToolCallCount reports how many tool calls survived decoding onto the
-// assistant variant; other roles never carry any.
-func decodedToolCallCount(m *openai.ChatCompletionMessageParamUnion) int {
-	if m.OfAssistant == nil {
-		return 0
+// restorerOwnsToolCalls reports whether restoreToolCallExtras can fully handle
+// this message's tool calls, in which case the generic pass must leave the key
+// alone (that restorer deliberately drops the streaming-only "index" key).
+//
+// It only reaches OfFunction, so a message carrying a non-function call — a
+// type:"custom" call, say — would silently lose that call's provider extras.
+// Those messages are forwarded verbatim by the generic pass instead. An empty
+// or null tool_calls is likewise not owned, so an explicitly sent empty array
+// still reaches the provider.
+func restorerOwnsToolCalls(m *openai.ChatCompletionMessageParamUnion) bool {
+	if m.OfAssistant == nil || len(m.OfAssistant.ToolCalls) == 0 {
+		return false
 	}
-	return len(m.OfAssistant.ToolCalls)
+	for _, call := range m.OfAssistant.ToolCalls {
+		if call.OfFunction == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // jsonSubset reports whether everything in want survives in got: same scalars,

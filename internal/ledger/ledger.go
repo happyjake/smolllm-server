@@ -86,7 +86,10 @@ func (l *Ledger) Record(alias string, event smolllm.RequestEvent) {
 	bucket.OutputTokens += event.OutputTokens
 	bucket.CacheReadTokens += event.CacheReadTokens
 	bucket.CacheWriteTokens += event.CacheWriteTokens
-	if event.CacheReported {
+	// Keyed on READ reporting: a provider that reported only cache writes has
+	// said nothing about reads, and counting it here would turn an unknown read
+	// into a known miss.
+	if event.CacheReadReported {
 		bucket.CacheReportedRequests++
 		bucket.CacheReportedInputTokens += event.InputTokens
 	}

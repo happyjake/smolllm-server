@@ -195,7 +195,10 @@ func usageFor(u smolllm.Usage) llm.CompletionUsage {
 		TotalTokens:              u.InputTokens + u.OutputTokens,
 		CacheCreationInputTokens: u.CacheWriteTokens,
 	}
-	if u.CacheReadTokens > 0 {
+	// Gated on whether the provider SPOKE about reads, not on a non-zero count:
+	// an explicit cached_tokens:0 is a real answer ("this call missed"), and
+	// suppressing it makes a genuine miss indistinguishable from silence.
+	if u.CacheReadReported {
 		out.PromptTokensDetails = &llm.PromptTokensDetails{CachedTokens: u.CacheReadTokens}
 	}
 	return out
