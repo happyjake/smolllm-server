@@ -138,6 +138,103 @@ curl -fsS http://127.0.0.1:11435/v1/embeddings \
   -d '{"model":"ollama/qwen3-embedding:0.6b","input":["hi","there"]}'
 ```
 
+### Deploying to a second machine
+
+The whole deploy is four files and one command. Nothing needs a Go toolchain on
+the target if the binary is built elsewhere for the same `GOOS/GOARCH`.
+
+```bash
+# --- on a machine with Go ---
+git clone https://github.com/happyjake/smolllm-server.git
+git clone https://github.com/RoCry/smolllm-go.git   # sibling: go.mod has a replace directive
+cd smolllm-server
+GOOS=darwin GOARCH=arm64 go build -o /tmp/smolllm-server ./cmd/server
+scp /tmp/smolllm-server TARGET:~/.local/bin/
+
+# --- on the target ---
+git clone https://github.com/happyjake/smolllm-server.git ~/w/smolllm-server
+mkdir -p ~/.config/smolllm-server && chmod 700 ~/.config/smolllm-server
+
+umask 077
+cat > ~/.env.smolllm <<'EOF'
+OPENROUTER_API_KEY=...
+ZAI_API_KEY=...
+ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
+EOF
+
+cat > ~/.config/smolllm-server/config.yaml <<EOF
+server:
+  bind: 127.0.0.1:11435
+  access_key: $(openssl rand -hex 24)
+  env_file: ~/.env.smolllm
+  log_level: info
+aliases:
+  fast: zai/glm-5.3-flash,openrouter/z-ai/glm-5.3-flash
+  complex: zai/glm-5.3,zai/glm-5.2,openrouter/z-ai/glm-5.3
+  vision: zai/glm-5.3-flash,openrouter/google/gemini-2.5-flash-lite
+  agent: zai/glm-5.3,openrouter/z-ai/glm-5.3-flash
+EOF
+
+cd ~/w/smolllm-server && SMOLLLM_SKIP_BUILD=1 bash launch/service.sh install
+```
+
+`just` is optional — every recipe is a thin wrapper over `launch/service.sh`,
+which is plain bash.
+
+### Choosing alias chains
+
+Two properties decide the order of a chain, and neither is model quality:
+
+- **Marginal cost.** A flat-rate subscription endpoint (a coding plan, a local
+  model) costs nothing per call, so it belongs first on every chain. A metered
+  key belongs behind it, catching only what the first leg fails.
+- **Whether the leg can do the job at all.** A chain falls through on *errors*.
+  A leg that accepts a request and answers it badly — ignoring `tools`, ignoring
+  an image — never triggers fallback, so it silently degrades the alias.
+
+That second point is why `vision` and `agent` cannot simply reuse the `fast`
+chain: every leg must be independently confirmed to honour images and tool
+calls, because a leg that quietly ignores them is indistinguishable from one
+that handled them.
+
+**Providers not in the built-in table** need no code change — give the provider
+segment any name and supply `${NAME}_BASE_URL` and `${NAME}_API_KEY`. A base URL
+already ending in a version segment (`/v4`) is used as-is; otherwise `/v1` is
+appended. A trailing `/` appends the endpoint directly, and a trailing `#` means
+"use this URL literally".
+
+**Verifying a chain end to end** — the alias is only as good as its worst
+reachable leg, so probe each leg by its raw `provider/model` string, which
+bypasses alias fallback and shows you which leg actually answered:
+
+```bash
+K=your-access-key
+# does this leg honour tools, or does it answer in prose?
+curl -s http://127.0.0.1:11435/v1/chat/completions \
+  -H "Authorization: Bearer $K" -H 'Content-Type: application/json' \
+  -d '{"model":"zai/glm-5.3","messages":[{"role":"user","content":"What is the weather in Paris?"}],
+       "tools":[{"type":"function","function":{"name":"get_weather",
+                 "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d["choices"][0]; print(c["finish_reason"], c["message"].get("tool_calls"))'
+# want: tool_calls [...]      prose + "stop" means this leg ignored the tools
+
+# does this leg accept an image?
+curl -s http://127.0.0.1:11435/v1/chat/completions \
+  -H "Authorization: Bearer $K" -H 'Content-Type: application/json' \
+  -d '{"model":"zai/glm-5.3-flash","messages":[{"role":"user","content":[
+        {"type":"text","text":"Describe this image in one word."},
+        {"type":"image_url","image_url":{"url":"data:image/png;base64,PUT_A_REAL_PNG_HERE"}}]}]}'
+```
+
+Client-supplied `image_url` parts reach the provider verbatim — the server
+models neither images nor tools, so what a leg does with them is entirely the
+provider's behaviour, and only a live probe tells you which.
+
+**A metered key with no spend cap will happily bill a runaway agent loop.** If a
+chain has an OpenRouter leg, set a credit limit on the key itself; the server has
+no budget enforcement and the ledger at `/stats` is after-the-fact and resets on
+restart.
+
 ### Pointing tools at it
 
 - **Cursor / Open WebUI / Aider**: set base URL to `http://127.0.0.1:11435/v1`,
