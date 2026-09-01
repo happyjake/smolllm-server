@@ -2,8 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/rocry/smolllm-server/internal/config"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +23,7 @@ import (
 func TestUsageForOmitsCacheDetailsWhenNotReported(t *testing.T) {
 	silent := usageFor(smolllm.Usage{InputTokens: 100, OutputTokens: 5})
 	require.Nil(t, silent.PromptTokensDetails)
-	require.Zero(t, silent.CacheCreationInputTokens)
+	require.Nil(t, silent.CacheCreationInputTokens)
 	encoded, err := json.Marshal(silent)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "prompt_tokens_details")
@@ -31,7 +35,8 @@ func TestUsageForOmitsCacheDetailsWhenNotReported(t *testing.T) {
 	})
 	require.NotNil(t, reported.PromptTokensDetails)
 	require.Equal(t, 80, reported.PromptTokensDetails.CachedTokens)
-	require.Equal(t, 20, reported.CacheCreationInputTokens)
+	require.NotNil(t, reported.CacheCreationInputTokens)
+	require.Equal(t, 20, *reported.CacheCreationInputTokens)
 	require.Equal(t, 105, reported.TotalTokens)
 
 	// An explicit zero is a real answer — this call missed — and must be
@@ -44,6 +49,15 @@ func TestUsageForOmitsCacheDetailsWhenNotReported(t *testing.T) {
 	encodedMiss, err := json.Marshal(explicitMiss)
 	require.NoError(t, err)
 	require.Contains(t, string(encodedMiss), `"cached_tokens":0`)
+
+	// Writes get the same treatment as reads: an explicit zero survives.
+	explicitNoWrite := usageFor(smolllm.Usage{
+		InputTokens: 100, CacheWriteTokens: 0, CacheWriteReported: true,
+	})
+	require.NotNil(t, explicitNoWrite.CacheCreationInputTokens)
+	encodedNoWrite, err := json.Marshal(explicitNoWrite)
+	require.NoError(t, err)
+	require.Contains(t, string(encodedNoWrite), `"cache_creation_input_tokens":0`)
 }
 
 func TestLedgerAggregatesCacheTokens(t *testing.T) {
@@ -138,4 +152,81 @@ func TestEmptyToolCallsSurviveToProvider(t *testing.T) {
 				"an explicitly sent tool_calls key must reach the provider")
 		})
 	}
+}
+
+// tool_calls forwarded verbatim must not replay the streaming-only "index" key,
+// which restoreToolCallExtras deliberately drops and strict providers reject.
+func TestForwardedToolCallsDropStreamingIndex(t *testing.T) {
+	var got map[string]any
+	ts, _ := newTestRig(t, false, func(body map[string]any) { got = body })
+	resp := postChat(t, ts, `{"model":"fast","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"c1","type":"custom","index":0,"custom":{"name":"run","input":"x"},"extra_content":{"sig":"abc"}}]}]}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assistant := got["messages"].([]any)[1].(map[string]any)
+	calls, ok := assistant["tool_calls"].([]any)
+	require.True(t, ok, "a custom tool call must still reach the provider")
+	call := calls[0].(map[string]any)
+	require.NotContains(t, call, "index", "streaming-only index must not be replayed")
+	require.Equal(t, map[string]any{"sig": "abc"}, call["extra_content"],
+		"a custom call's provider extras must survive")
+}
+
+// A failed turn still costs tokens. A client that asked for usage needs it most
+// on the path where something went wrong, so the error exit emits the frame too.
+func TestStreamingErrorStillEmitsUsageWhenRequested(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":2,\"prompt_tokens_details\":{\"cached_tokens\":80}}}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {bad-json}\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(upstream.Close)
+
+	t.Setenv("MOCK_BASE_URL", upstream.URL)
+	t.Setenv("MOCK_API_KEY", "secret-mock-key")
+
+	cfg := &config.Config{
+		Server:  config.ServerConfig{Bind: "127.0.0.1:0", AccessKey: "rocry", LogLevel: "warn"},
+		Aliases: map[string]string{"fast": "mock/marvin-7b"},
+	}
+	srv := New(config.NewStore("", cfg), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ts := httptest.NewServer(srv.HTTP.Handler)
+	t.Cleanup(ts.Close)
+
+	resp := postChat(t, ts, `{"model":"fast","stream":true,"stream_options":{"include_usage":true},
+		"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var cached float64
+	var sawError, sawUsage bool
+	for _, line := range strings.Split(string(body), "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || strings.TrimSpace(payload) == "[DONE]" {
+			continue
+		}
+		var chunk map[string]any
+		require.NoError(t, json.Unmarshal([]byte(payload), &chunk))
+		if _, has := chunk["error"]; has {
+			sawError = true
+		}
+		if usage, has := chunk["usage"].(map[string]any); has {
+			sawUsage = true
+			details := usage["prompt_tokens_details"].(map[string]any)
+			cached = details["cached_tokens"].(float64)
+		}
+	}
+	require.True(t, sawError, "the error frame must still be sent")
+	require.True(t, sawUsage, "usage must be delivered on the error path too")
+	require.Equal(t, float64(80), cached, "cache counts from before the failure must survive")
 }

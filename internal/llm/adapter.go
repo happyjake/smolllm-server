@@ -205,7 +205,18 @@ func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) err
 			// When the union decoded no calls the raw value is null or [], which
 			// that restorer skips entirely, so it is forwarded here instead —
 			// otherwise the key vanishes from a message that explicitly sent it.
-			if key == "tool_calls" && restorerOwnsToolCalls(&messages[i]) {
+			if key == "tool_calls" {
+				if restorerOwnsToolCalls(&messages[i]) {
+					continue
+				}
+				// Forwarded verbatim, minus "index": that key belongs to
+				// streaming deltas, and replaying it is what restoreToolCallExtras
+				// deliberately avoids. Strict providers reject it.
+				stripped, err := stripToolCallIndexes(rawValue)
+				if err != nil {
+					return fmt.Errorf("normalize message #%d tool calls: %w", i, err)
+				}
+				extra[key] = stripped
 				continue
 			}
 			encodedValue, ok := encodedObj[key]
@@ -220,6 +231,31 @@ func restoreMessageExtras(messages []smolllm.Message, raw []json.RawMessage) err
 		}
 	}
 	return nil
+}
+
+// stripToolCallIndexes removes the streaming-only "index" key from each call in
+// a raw tool_calls value, leaving everything else byte-identical. A null or
+// non-array value passes through untouched.
+func stripToolCallIndexes(raw json.RawMessage) (json.RawMessage, error) {
+	var calls []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return raw, nil // null, or a shape we do not model; forward as sent
+	}
+	changed := false
+	for _, call := range calls {
+		if _, ok := call["index"]; ok {
+			delete(call, "index")
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, nil
+	}
+	out, err := json.Marshal(calls)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // restorerOwnsToolCalls reports whether restoreToolCallExtras can fully handle

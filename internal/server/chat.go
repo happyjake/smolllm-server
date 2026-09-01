@@ -137,6 +137,10 @@ streamLoop:
 			Choices: []llm.ChatChoiceDelta{{Index: 0, Delta: llm.ChatDelta{}, FinishReason: &reason}},
 			Error:   &llm.ChatStreamError{Message: err.Error(), Type: "api_error"},
 		})
+		// A failed turn still costs tokens, and the library now preserves usage
+		// that arrived before the failure. A client that asked for usage needs it
+		// most on the path where something went wrong.
+		writeUsageFrame(w, flusher, includeUsage, id, created, model, stream.Usage)
 		writeRaw(w, flusher, "[DONE]")
 		return
 	}
@@ -159,16 +163,25 @@ streamLoop:
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []llm.ChatChoiceDelta{{Index: 0, Delta: llm.ChatDelta{}, FinishReason: &finishReason}},
 	})
-	// OpenAI sends usage in a final frame with an empty choices array, only when
-	// the client asked for it.
-	if includeUsage {
-		usage := usageFor(stream.Usage)
-		writeChunk(w, flusher, llm.ChatCompletionChunk{
-			ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
-			Choices: []llm.ChatChoiceDelta{}, Usage: &usage,
-		})
-	}
+	writeUsageFrame(w, flusher, includeUsage, id, created, model, stream.Usage)
 	writeRaw(w, flusher, "[DONE]")
+}
+
+// writeUsageFrame emits OpenAI's final usage frame — an empty choices array
+// carrying usage — when the client asked for one. Both the success and error
+// exits go through it so they cannot drift apart.
+func writeUsageFrame(
+	w http.ResponseWriter, f http.Flusher, include bool,
+	id string, created int64, model string, u smolllm.Usage,
+) {
+	if !include {
+		return
+	}
+	usage := usageFor(u)
+	writeChunk(w, f, llm.ChatCompletionChunk{
+		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
+		Choices: []llm.ChatChoiceDelta{}, Usage: &usage,
+	})
 }
 
 func writeChunk(w http.ResponseWriter, f http.Flusher, c llm.ChatCompletionChunk) {
@@ -190,10 +203,13 @@ func writeRaw(w http.ResponseWriter, f http.Flusher, payload string) {
 // regressing.
 func usageFor(u smolllm.Usage) llm.CompletionUsage {
 	out := llm.CompletionUsage{
-		PromptTokens:             u.InputTokens,
-		CompletionTokens:         u.OutputTokens,
-		TotalTokens:              u.InputTokens + u.OutputTokens,
-		CacheCreationInputTokens: u.CacheWriteTokens,
+		PromptTokens:     u.InputTokens,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      u.InputTokens + u.OutputTokens,
+	}
+	if u.CacheWriteReported {
+		writes := u.CacheWriteTokens
+		out.CacheCreationInputTokens = &writes
 	}
 	// Gated on whether the provider SPOKE about reads, not on a non-zero count:
 	// an explicit cached_tokens:0 is a real answer ("this call missed"), and

@@ -147,9 +147,10 @@ type CompletionUsage struct {
 	// "the provider did not say".
 	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
 	// CacheCreationInputTokens has no OpenAI equivalent, so it rides as an
-	// Anthropic-style extension. OpenAI clients ignore unknown keys, and
-	// omitempty keeps ordinary responses byte-identical to before.
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	// Anthropic-style extension. A pointer, not an int with omitempty: an
+	// explicitly reported zero is a real answer and must survive, exactly as it
+	// does for reads. Nil keeps ordinary responses byte-identical to before.
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 type PromptTokensDetails struct {
