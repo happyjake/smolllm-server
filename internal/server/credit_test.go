@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rocry/smolllm-server/internal/config"
 
@@ -124,6 +125,50 @@ func TestCreditsAcrossWireModesAndCompatibilityRetry(t *testing.T) {
 			require.NotEmpty(t, u["credit_report_id"])
 		})
 	}
+}
+
+// The final wire frame must wait for the last attempt hook, not publish the
+// preceding retry's apparently complete subtotal while the hook is still running.
+func TestFinalUsageWaitsForDelayedAttemptHook(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"error":{"message":"compat"},"usage":{"credit":1.5}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"credit\":2.62}}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	t.Setenv("MOCK_BASE_URL", upstream.URL)
+	t.Setenv("MOCK_API_KEY", "dummy")
+	b := new(creditTally)
+	var hooks atomic.Int32
+	opts := []smolllm.Option{smolllm.WithModel("mock/test"), smolllm.WithHook(func(e smolllm.RequestEvent) {
+		if hooks.Add(1) == 2 {
+			time.Sleep(50 * time.Millisecond)
+		}
+		b.record(e)
+	})}
+	w := httptest.NewRecorder()
+	h := &handlers{}
+	h.chatStream(w, httptest.NewRequest("POST", "/v1/chat/completions", nil), smolllm.PromptFromString("hi"), opts, true, b)
+	require.Equal(t, int32(2), hooks.Load())
+	var usage map[string]any
+	for _, line := range strings.Split(w.Body.String(), "\n") {
+		if s, ok := strings.CutPrefix(line, "data: "); ok && s != "[DONE]" {
+			var v map[string]any
+			require.NoError(t, json.Unmarshal([]byte(s), &v))
+			if u, ok := v["usage"].(map[string]any); ok {
+				usage = u
+			}
+		}
+	}
+	require.Equal(t, 4.12, usage["credit"])
+	require.Equal(t, 2., usage["credit_attempts"])
+	require.Equal(t, 2., usage["credit_known_attempts"])
+	require.Equal(t, true, usage["credit_complete"])
 }
 
 func TestCreditTallyDecimalAccuracy(t *testing.T) {
