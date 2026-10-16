@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -568,4 +569,53 @@ func TestChatCompletions_ClientTimeoutOverridesServerDefault(t *testing.T) {
 	code, elapsed := postChatTimed(t, ts, `{"model":"fast","timeout":0.3,"messages":[{"role":"user","content":"hi"}]}`)
 	require.Equal(t, http.StatusBadGateway, code)
 	require.Less(t, elapsed, 5*time.Second)
+}
+
+// Regression for the 2026-10-16 agent-alias incident: the first leg answered
+// HTTP 200 with a single synthesized finish_reason=error chunk and zero usage.
+// The client must receive the next leg's content, never that dead frame.
+func TestChatCompletions_StreamingFallsBackOnDeadOnArrivalLeg(t *testing.T) {
+	var deadHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		if body["model"] == "dead-model" {
+			deadHits.Add(1)
+			_, _ = fmt.Fprint(w, `data: {"id":"","created":0,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":"error"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`+"\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		_, _ = fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"rescued"}}]}`+"\n\n")
+		_, _ = fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	t.Setenv("MOCK_BASE_URL", upstream.URL)
+	t.Setenv("MOCK_API_KEY", "secret-mock-key")
+	cfg := &config.Config{
+		Server:  config.ServerConfig{Bind: "127.0.0.1:0", AccessKey: "rocry", LogLevel: "warn"},
+		Aliases: map[string]string{"agent": "mock/dead-model,mock/live-model"},
+	}
+	srv := New(config.NewStore("", cfg), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ts := httptest.NewServer(srv.HTTP.Handler)
+	t.Cleanup(ts.Close)
+
+	body := `{"model":"agent","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer rocry")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), "rescued")
+	require.Contains(t, string(raw), `"finish_reason":"stop"`)
+	require.NotContains(t, string(raw), `"finish_reason":"error"`)
+	require.GreaterOrEqual(t, deadHits.Load(), int32(1))
 }
