@@ -97,6 +97,24 @@ SMOLLLM_SKIP_BUILD=1 bash launch/service.sh install
 `SMOLLLM_SKIP_BUILD=1` fails loudly if no executable is present, so it can
 never bootstrap a job pointing at a missing binary.
 
+### Build provenance without deployment
+
+`python3 launch/build.py --output /tmp/smolllm-artifact` (Python 3.12+, Go)
+archives two clean committed repositories and stamps their full revisions. The
+library defaults to sibling `../smolllm-go`; `--library <root>` selects another
+clean checkout. `--goos` / `--goarch` support cross-compilation. The script writes
+only the new staging artifact and its private `.build.json` receipt, rejecting
+existing output, source-root output and the standard live binary path. It never
+installs or restarts anything. Run `just test-build` to test this helper offline.
+
+Authenticated `/version` reports the running executable's revisions, source-clean
+flag, platform, PID and per-process instance ID. Ordinary `go build` (including
+legacy `just reload`) reports unverified/unknown provenance; it remains usable but
+cannot satisfy a managed fleet release gate. Darwin/Linux artifact hashes differ;
+compare the source revision pair and verify each artifact against its own receipt.
+A receipt is build evidence, not proof that a running host loaded that artifact.
+Build stamps are operational metadata, not signed supply-chain attestations.
+
 ### Hot reload
 
 Just edit the YAML — the server picks it up automatically (~200 ms debounce
@@ -121,6 +139,7 @@ script edit. `SMOLLLM_HEALTH_URL` overrides it outright.
 | | |
 |---|---|
 | `GET /healthz`           | Public liveness probe. |
+| `GET /version`           | Running build/process identity (server + local library revisions). Auth required. |
 | `GET /stats`             | In-memory per-attempt token usage for the last ~31 UTC days. Auth required. |
 | `GET /v1/models`         | Lists configured aliases. Auth required. |
 | `POST /v1/chat/completions` | OpenAI Chat Completions. Auth required. Streaming via `stream: true`. |

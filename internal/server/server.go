@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/rocry/smolllm-server/internal/auth"
+	"github.com/rocry/smolllm-server/internal/buildinfo"
 	"github.com/rocry/smolllm-server/internal/config"
 	"github.com/rocry/smolllm-server/internal/ledger"
 )
@@ -40,6 +42,10 @@ func New(store *config.Store, logger *slog.Logger) *Server {
 	mux.Handle("POST /v1/embeddings", authMW(http.HandlerFunc(h.embeddings)))
 	mux.Handle("GET /v1/models", authMW(http.HandlerFunc(h.models)))
 	mux.Handle("GET /stats", authMW(http.HandlerFunc(h.stats)))
+	mux.Handle("GET /version", authMW(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(buildinfo.Current())
+	})))
 
 	wrapped := chain(mux, recoverMW(logger), logMW(logger))
 

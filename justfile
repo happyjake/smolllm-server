@@ -10,6 +10,14 @@ build:
 test:
     go test ./... -race -count=1
 
+# Test the staging-only provenance build helper (offline).
+test-build:
+    python3 -m unittest discover -s launch -p 'test_*.py'
+
+# Build a stamped artifact outside live paths; never deploy/restart.
+artifact output:
+    python3 launch/build.py --output {{quote(output)}}
+
 # Run Go's static analyzer.
 vet:
     go vet ./...
