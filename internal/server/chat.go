@@ -24,19 +24,25 @@ func (h *handlers) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts = append(opts, smolllm.WithLogger(h.logger))
-	opts = append(opts, smolllm.WithHook(h.ledger.Hook(req.Model)))
+	billing := new(creditTally)
+	ledgerHook := h.ledger.Hook(req.Model)
+	opts = append(opts, smolllm.WithHook(func(e smolllm.RequestEvent) {
+		ledgerHook(e)
+		billing.record(e)
+	}))
 
 	if req.Stream {
 		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-		h.chatStream(w, r, prompt, opts, includeUsage)
+		h.chatStream(w, r, prompt, opts, includeUsage, billing)
 		return
 	}
-	h.chatBlocking(w, r, prompt, opts, req.Model)
+	h.chatBlocking(w, r, prompt, opts, req.Model, billing)
 }
 
-func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt smolllm.Prompt, opts []smolllm.Option, requestedModel string) {
+func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt smolllm.Prompt, opts []smolllm.Option, requestedModel string, billing *creditTally) {
 	resp, err := smolllm.Ask(r.Context(), prompt, opts...)
 	if err != nil {
+		billing.errorHeaders(w)
 		upstreamError(w, err)
 		return
 	}
@@ -64,7 +70,7 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 			},
 			FinishReason: finishReasonForTurn(resp.FinishReason, len(resp.ToolCalls)),
 		}},
-		Usage: usageFor(resp.Usage),
+		Usage: billing.apply(usageFor(resp.Usage)),
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(out); err != nil {
@@ -73,7 +79,7 @@ func (h *handlers) chatBlocking(w http.ResponseWriter, r *http.Request, prompt s
 }
 
 func (h *handlers) chatStream(
-	w http.ResponseWriter, r *http.Request, prompt smolllm.Prompt, opts []smolllm.Option, includeUsage bool,
+	w http.ResponseWriter, r *http.Request, prompt smolllm.Prompt, opts []smolllm.Option, includeUsage bool, billing *creditTally,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -83,6 +89,7 @@ func (h *handlers) chatStream(
 
 	stream, err := smolllm.Stream(r.Context(), prompt, opts...)
 	if err != nil {
+		billing.errorHeaders(w)
 		upstreamError(w, err)
 		return
 	}
@@ -140,7 +147,7 @@ streamLoop:
 		// A failed turn still costs tokens, and the library now preserves usage
 		// that arrived before the failure. A client that asked for usage needs it
 		// most on the path where something went wrong.
-		writeUsageFrame(w, flusher, includeUsage, id, created, model, stream.Usage)
+		writeUsageFrame(w, flusher, includeUsage, id, created, model, stream.Usage, billing)
 		writeRaw(w, flusher, "[DONE]")
 		return
 	}
@@ -163,7 +170,7 @@ streamLoop:
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []llm.ChatChoiceDelta{{Index: 0, Delta: llm.ChatDelta{}, FinishReason: &finishReason}},
 	})
-	writeUsageFrame(w, flusher, includeUsage, id, created, model, stream.Usage)
+	writeUsageFrame(w, flusher, includeUsage, id, created, model, stream.Usage, billing)
 	writeRaw(w, flusher, "[DONE]")
 }
 
@@ -172,12 +179,12 @@ streamLoop:
 // exits go through it so they cannot drift apart.
 func writeUsageFrame(
 	w http.ResponseWriter, f http.Flusher, include bool,
-	id string, created int64, model string, u smolllm.Usage,
+	id string, created int64, model string, u smolllm.Usage, billing *creditTally,
 ) {
 	if !include {
 		return
 	}
-	usage := usageFor(u)
+	usage := billing.apply(usageFor(u))
 	writeChunk(w, f, llm.ChatCompletionChunk{
 		ID: id, Object: "chat.completion.chunk", Created: created, Model: model,
 		Choices: []llm.ChatChoiceDelta{}, Usage: &usage,

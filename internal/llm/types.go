@@ -137,9 +137,16 @@ type ChatMessage struct {
 }
 
 type CompletionUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	// Actual platform credits (not USD). A non-nil partial subtotal is paired
+	// with CreditComplete=false; absent is unknown, explicit zero is free.
+	Credit              *json.Number `json:"credit,omitempty"`
+	CreditReportID      string       `json:"credit_report_id,omitempty"`
+	CreditComplete      bool         `json:"credit_complete"`
+	CreditAttempts      int          `json:"credit_attempts"`
+	CreditKnownAttempts int          `json:"credit_known_attempts"`
+	PromptTokens        int          `json:"prompt_tokens"`
+	CompletionTokens    int          `json:"completion_tokens"`
+	TotalTokens         int          `json:"total_tokens"`
 	// PromptTokensDetails is OpenAI's own field for cache reads, so clients
 	// that already understand prompt caching read it without changes. Omitted
 	// entirely when the provider reported no cache data: emitting
