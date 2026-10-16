@@ -1,0 +1,19 @@
+# Install as ~/.config/systemd/user/smolllm-server.service.
+# Provider keys are loaded by the server from its configured env_file, not here.
+[Unit]
+Description=Local OpenAI-compatible model router (smolllm-server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=%h/.local/bin/smolllm-server --config %h/.config/smolllm-server/config.yaml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

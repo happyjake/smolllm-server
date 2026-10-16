@@ -1,7 +1,8 @@
 # smolllm-server
 
 OpenAI-compatible HTTP front-end for [smolllm-go](../smolllm-go). Routes requests
-across 41 providers via short alias names, runs locally on macOS under launchd.
+across 41 providers via short alias names. Run locally on macOS under launchd
+or on Linux under systemd; the router does not require a GPU.
 
 ## Layout
 
@@ -42,13 +43,21 @@ each in order and falls back on error.
 
 - **429** falls through to the next leg immediately (no retry — the quota is
   exhausted, waiting helps nobody).
-- **500/502/503/529** retry the same leg 3× (1s/2s/4s backoff), then advance.
+- **500/502/503/529**, and dead-on-arrival empty responses, get up to
+  **3 total attempts** on the same model (1s/2s between attempts), then advance.
 - Any other error (400s, network, timeout) advances the chain at once.
 - A **hung** leg is bounded by `server.request_timeout` (per attempt; the
   client `timeout` field overrides it) — set this, or a dead-but-silent
   provider pins requests for the 600s library default before switching.
 - An empty answer, a turn truncated mid-tool-call, and reasoning that ate the
   whole output budget all fail the leg too — the chain routes around them.
+- Once streaming content or reasoning has reached the client, a later failure
+  is surfaced rather than silently switching models and replaying output.
+  Failover is safe before first usable output; tool-only streams are gated
+  until their complete tool calls arrive.
+- This implementation has no cross-request circuit breaker or separate
+  first-byte timeout: `request_timeout` bounds the complete upstream attempt.
+  Do not infer those features from older operational notes.
 - What never triggers fallback: a leg that answers *plausibly but badly*
   (ignoring `tools`, dropping an image). Probe every leg before trusting it
   (see "Choosing alias chains").
@@ -195,6 +204,50 @@ cd ~/w/smolllm-server && SMOLLLM_SKIP_BUILD=1 bash launch/service.sh install
 
 `just` is optional — every recipe is a thin wrapper over `launch/service.sh`,
 which is plain bash.
+
+### Linux / systemd user service
+
+Build the binary for the target architecture on a host with Go. Keep
+`smolllm-go` beside the server checkout, as required by `go.mod`:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/smolllm-server-linux ./cmd/server
+scp /tmp/smolllm-server-linux TARGET:/tmp/smolllm-server-linux
+scp launch/smolllm-server.service TARGET:/tmp/smolllm-server.service
+```
+
+On the target, first create the configuration and provider environment file
+following the configuration section. Bind to `127.0.0.1:11435`, generate a
+**new local access key**, restrict configuration/credential files to mode
+`0600`, and include only providers actually used by that host. Provider base
+URLs and network access can differ between hosts; probe from the target
+before copying an alias chain. Set a per-attempt `request_timeout` appropriate
+for the consuming agent's total task deadline. A fallback list alone does not
+bound how long a hung provider takes to fail.
+
+```bash
+mkdir -p ~/.local/bin ~/.config/systemd/user
+install -m 755 /tmp/smolllm-server-linux ~/.local/bin/smolllm-server
+install -m 644 /tmp/smolllm-server.service ~/.config/systemd/user/smolllm-server.service
+systemctl --user daemon-reload
+systemctl --user enable --now smolllm-server.service
+curl --fail --max-time 5 http://127.0.0.1:11435/healthz
+journalctl --user -u smolllm-server.service
+```
+
+For an unattended server, have its administrator enable user lingering
+(`loginctl enable-linger "$USER"`) so the user service survives logout and
+starts at boot. The supplied unit restarts a crashed process; it is not a
+model-availability probe. Monitor both the router and real requests separately.
+
+Connect Pi using a custom `smolllm` provider in `~/.pi/agent/models.json`:
+`baseUrl: http://127.0.0.1:11435/v1`, `api: openai-completions`, the local
+access key, and an `agent` model. The bot then selects `--model smolllm/agent`.
+Keep tools, sessions and bot identity local to each bot host. `agent` is an
+alias understood by the router, not an instruction to execute tasks elsewhere.
+Verify streaming/non-streaming tools, tool-result replay and forced fallback
+before changing the bot's active configuration; do not infer success from
+`/healthz` alone.
 
 ### Choosing alias chains
 
