@@ -1,0 +1,223 @@
+# promtool unit tests for ../prometheus/rules-smolllm.yml (deployed on rage as
+# /data/monitoring/prometheus/rules-smolllm.yml).
+#
+# These exist because "the rule loaded" and "the rule can fire" are different
+# claims, and only the second one is worth anything. A rule whose expression
+# returns an empty vector loads green, reports health=ok, sits inactive
+# forever, and pages nobody.
+#
+# That is not hypothetical. The first version of SmolllmFirstTokenSlow was
+# silent in exactly that way: it grouped by (host), which dropped `le`, so
+# histogram_quantile had no bucket boundaries and returned empty rather than
+# erroring. "Healthy" in the UI, unable to fire, paging nobody.
+#
+# The near-miss worth recording: the volume gate looked like the same bug --
+# `A and B` with A grouped by (host, le) and B by (host) "can never match" --
+# but it was fine, because histogram_quantile consumes `le` and emits only the
+# remaining labels. The mutation to `and on (host)` turned out not to change the
+# result; it is kept because it states the intent, not because it repairs
+# anything. A red-check proved the point by staying green.
+#
+# Run against the real rule file, not a copy of it:
+#   docker cp <rules> prometheus:/tmp/rules-smolllm.yml
+#   docker cp <this file> prometheus:/tmp/
+#   docker exec prometheus sh -c 'cd /tmp && promtool test rules smolllm_rules_test.yml'
+#
+# Note the annotations are asserted verbatim, runbook prose included. That is
+# deliberate: promtool compares the whole alert, and a runbook that renders
+# wrong is a pager you cannot act on.
+
+rule_files:
+  - rules-smolllm.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ---------------------------------------------------------------------
+  # SmolllmFirstTokenSlow -- p90 first token above 15s
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      # Healthy: everything under 5s. p90 ~4s, far below the threshold.
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="2"}'
+        values: '0+0x20'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="5"}'
+        values: '2+2x20'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="+Inf"}'
+        values: '2+2x20'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="m"}'
+        values: '2+2x20'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="m"}'
+        values: '4+4x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SmolllmFirstTokenSlow
+        exp_alerts: []          # a healthy leg must stay silent
+
+  - interval: 1m
+    input_series:
+      # Degraded: the mass has moved into the 60s bucket. This is the case the
+      # alert exists for -- a leg that accepts and then queues.
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="5"}'
+        values: '0+0x60'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="15"}'
+        values: '0+0x60'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="60"}'
+        values: '2+2x60'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="+Inf"}'
+        values: '2+2x60'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="m"}'
+        values: '2+2x60'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="m"}'
+        values: '60+60x60'
+    alert_rule_test:
+      # Enough samples for BOTH the 10m rate window and the `for: 10m` pending
+      # period. 20 samples left the alert pending-but-not-firing and promtool
+      # reported got: [] -- which is also what a broken expression looks like,
+      # so give the fixture room rather than reading a false negative.
+      - eval_time: 30m
+        alertname: SmolllmFirstTokenSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: probe
+            exp_annotations:
+              summary: "smolllm probe: first token is slow (p90 55.5s)"
+              runbook: |
+                p90 over 15s means every tenth request waits a quarter-minute for a first
+                token. Check which alias/leg: sum by (alias,provider,model)
+                (rate(smolllm_attempt_first_output_seconds_bucket[10m])). If one leg is
+                responsible, it is queueing rather than failing, so fallback will never
+                fire -- remove it from the chain by hand or lower first_output_timeout to
+                force the switch.
+
+  # ---------------------------------------------------------------------
+  # Same slow latency, one named model instead of a generic one. Not a
+  # regression guard for the join (see the header: the join was never broken);
+  # it pins the assertion that the alert fires on a realistic single-leg
+  # series where the model name is the one that actually appears in traffic.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",le="5"}'
+        values: '0+0x60'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",le="60"}'
+        values: '2+2x60'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",le="+Inf"}'
+        values: '2+2x60'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="slow"}'
+        values: '2+2x60'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="slow"}'
+        values: '60+60x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SmolllmFirstTokenSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: probe
+            exp_annotations:
+              summary: "smolllm probe: first token is slow (p90 54.5s)"
+              runbook: |
+                p90 over 15s means every tenth request waits a quarter-minute for a first
+                token. Check which alias/leg: sum by (alias,provider,model)
+                (rate(smolllm_attempt_first_output_seconds_bucket[10m])). If one leg is
+                responsible, it is queueing rather than failing, so fallback will never
+                fire -- remove it from the chain by hand or lower first_output_timeout to
+                force the switch.
+
+  # ---------------------------------------------------------------------
+  # Volume gate: the same slow latency with almost no traffic must NOT fire,
+  # otherwise one slow request in a quiet hour pages someone.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="5"}'
+        values: '0+0x20'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="60"}'
+        values: '0+0x20'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="120"}'
+        values: '0+0x20'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="+Inf"}'
+        values: '0+1x20'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="quiet",alias="a",provider="p",model="m"}'
+        values: '0+1x20'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="quiet",alias="a",provider="p",model="m"}'
+        values: '0+90x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SmolllmFirstTokenSlow
+        exp_alerts: []          # 1 request / 10m is below the 0.02/s gate
+
+  # ---------------------------------------------------------------------
+  # SmolllmFirstOutputTimeouts -- the guard actually fired
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'smolllm_attempts_total{host="probe",alias="a",provider="p",model="m",outcome="first_output_timeout",phase="stream"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SmolllmFirstOutputTimeouts
+        exp_alerts:
+          # outcome and phase are part of the label set on purpose: they say
+          # which failure mode fired, without a second query.
+          - exp_labels:
+              severity: warning
+              host: probe
+              alias: a
+              provider: p
+              model: m
+              outcome: first_output_timeout
+              phase: stream
+            exp_annotations:
+              summary: "smolllm probe: p/m produced no first token"
+              runbook: |
+                The leg accepted the request and said nothing until the guard fired, so
+                the user waited the full first_output_timeout and then paid for a retry.
+                Distinguish queueing from a dead endpoint: a dead endpoint usually fails
+                earlier with `error` (connection/5xx). Repeated first_output_timeout with
+                no errors points at an overloaded or throttling upstream.
+
+  - interval: 1m
+    input_series:
+      # Ordinary traffic: ok and error are not timeouts and must not page.
+      - series: 'smolllm_attempts_total{host="probe",alias="a",provider="p",model="m",outcome="ok",phase=""}'
+        values: '0+2x25'
+      - series: 'smolllm_attempts_total{host="probe",alias="a",provider="p",model="m",outcome="error",phase="headers"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: SmolllmFirstOutputTimeouts
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------
+  # SmolllmMetricsStale -- the exporter cannot reach the server
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'smolllm_exporter_scrape_ok{host="probe"}'
+        values: '0x25'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SmolllmMetricsStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: probe
+            exp_annotations:
+              summary: "smolllm probe: metrics exporter cannot reach the server"
+              runbook: |
+                The exporter is up but its upstream scrape failed, so the counters above
+                are frozen at their last good values. Check the server:
+                systemctl --user status smolllm-server (doom) or
+                launchctl print gui/$(id -u)/personal.smolllm-server (mc4).
+
+  - interval: 1m
+    input_series:
+      - series: 'smolllm_exporter_scrape_ok{host="probe"}'
+        values: '1x25'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SmolllmMetricsStale
+        exp_alerts: []
