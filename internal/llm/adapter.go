@@ -20,7 +20,7 @@ import (
 // `defaultTimeoutSec` is the server-configured per-attempt bound, applied only
 // when the request carries no explicit `timeout` (client always wins); <= 0
 // leaves the library default in place.
-func BuildOptions(req *ChatRequest, aliasResolve func(string) string, defaultTimeoutSec float64) (smolllm.Prompt, []smolllm.Option, error) {
+func BuildOptions(req *ChatRequest, aliasResolve func(string) string, defaultTimeoutSec float64, firstOutputTimeoutSec *float64) (smolllm.Prompt, []smolllm.Option, error) {
 	if req == nil {
 		return smolllm.Prompt{}, nil, errors.New("request must not be nil")
 	}
@@ -93,6 +93,11 @@ func BuildOptions(req *ChatRequest, aliasResolve func(string) string, defaultTim
 		opts = append(opts, smolllm.WithTimeout(time.Duration(*req.Timeout*float64(time.Second))))
 	} else if defaultTimeoutSec > 0 {
 		opts = append(opts, smolllm.WithTimeout(time.Duration(defaultTimeoutSec*float64(time.Second))))
+	}
+	// An omitted key inherits the library default rather than disabling the
+	// guard: the safe behaviour must be the one an operator gets by not acting.
+	if firstOutputTimeoutSec != nil {
+		opts = append(opts, smolllm.WithFirstOutputTimeout(time.Duration(*firstOutputTimeoutSec*float64(time.Second))))
 	}
 	return prompt, opts, nil
 }

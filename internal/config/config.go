@@ -38,6 +38,16 @@ type ServerConfig struct {
 	// fallback advances — a dead-but-hanging provider would pin every request
 	// to leg 1. 0 keeps the library default.
 	RequestTimeout float64 `yaml:"request_timeout"`
+	// FirstOutputTimeout abandons a leg that produces no content or reasoning
+	// delta for this many seconds and moves to the next one. Without it a leg
+	// that is merely queued upstream holds the whole attempt budget, so the
+	// chain never reaches a healthy model and the caller sees a timeout. Omit
+	// the key to inherit the library default; 0 disables the check.
+	FirstOutputTimeout *float64 `yaml:"first_output_timeout"`
+	// ClientHeaderTimeout is how long the callers wait for response headers,
+	// used only to validate the first-output budgets above. Defaults to 300s,
+	// the pi client's documented header timeout.
+	ClientHeaderTimeout float64 `yaml:"client_header_timeout"`
 }
 
 // Load reads YAML from path, applies env overrides and defaults, and validates.
@@ -103,6 +113,12 @@ func (c *Config) Validate() error {
 	if c.Server.RequestTimeout < 0 {
 		return fmt.Errorf("server.request_timeout must be >= 0 seconds (got %g)", c.Server.RequestTimeout)
 	}
+	if c.Server.FirstOutputTimeout != nil && *c.Server.FirstOutputTimeout < 0 {
+		return fmt.Errorf("server.first_output_timeout must be >= 0 seconds (got %g)", *c.Server.FirstOutputTimeout)
+	}
+	if err := validateFirstOutputBudget(c); err != nil {
+		return err
+	}
 	for name, value := range c.Aliases {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("alias name must not be empty")
@@ -118,6 +134,44 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("alias %q has empty entry in chain", name)
 			}
 		}
+	}
+	return nil
+}
+
+// defaultClientHeaderTimeout matches the 300s headers timeout the bundled pi
+// client applies to every request (DEFAULT_HTTP_IDLE_TIMEOUT_MS). It is a
+// client-side fact this server cannot read, so it is configuration: whenever
+// the two drift, a chain that exhausts its first-output budgets hangs until the
+// client gives up and reports a timed-out request with no handshake at all.
+const defaultClientHeaderTimeout = 300.0
+
+// validateFirstOutputBudget keeps the worst case of a first-output-only chain
+// inside the client's header timeout. Without this check the guard is easy to
+// defeat: lengthen one budget, or add one more slow model to an alias, and the
+// chain again spends longer than the caller will wait - which is exactly the
+// incident the guard exists to prevent. Summing only first-output budgets (not
+// the full attempt timeouts) is deliberate: once a leg emits output it has
+// proven healthy, and the remaining generation time is bounded by the client's
+// body timeout rather than by failover arithmetic.
+func validateFirstOutputBudget(c *Config) error {
+	if c.Server.FirstOutputTimeout == nil || *c.Server.FirstOutputTimeout == 0 {
+		return nil
+	}
+	budget := *c.Server.FirstOutputTimeout
+	limit := c.Server.ClientHeaderTimeout
+	if limit <= 0 {
+		limit = defaultClientHeaderTimeout
+	}
+	for name, value := range c.Aliases {
+		legs := len(strings.Split(value, ","))
+		worst := budget * float64(legs)
+		if worst <= limit {
+			continue
+		}
+		return fmt.Errorf(
+			"alias %q has %d models; at first_output_timeout=%gs the worst case is %gs, exceeding the client header timeout of %gs. "+
+				"Lower first_output_timeout (below %gs still fits %d models), shorten the chain, or raise server.client_header_timeout if the clients really wait longer",
+			name, legs, budget, worst, limit, limit/float64(legs), legs)
 	}
 	return nil
 }
