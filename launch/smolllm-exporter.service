@@ -1,0 +1,20 @@
+# Install as ~/.config/systemd/user/smolllm-exporter.service.
+# Point at the repo's script (or copy it to ~/.local/bin). The exporter reads
+# the server's access_key from its config, so it runs as the same user.
+[Unit]
+Description=Prometheus exporter for smolllm-server (:9104)
+After=network-online.target smolllm-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=HOME=%h
+ExecStart=/usr/bin/python3 %h/.local/bin/smolllm_exporter.py
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

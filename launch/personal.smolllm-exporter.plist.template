@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Generated from launch/personal.smolllm-exporter.plist.template by
+  launch/service.sh. Do not edit the copy in ~/Library/LaunchAgents.
+
+  Separate unit from personal.smolllm-server on purpose: the exporter is a
+  scraper, and a crash in it must not take the proxy down with it (nor the
+  reverse). Launchd's KeepAlive restarts either one independently.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>personal.smolllm-exporter</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@PYTHON@</string>
+        <string>@EXPORTER_PATH@</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@WORKING_DIR@</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>@HOME@</string>
+        <key>PATH</key>
+        <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>USER</key>
+        <string>@USER@</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>@LOG_FILE@</string>
+    <key>StandardErrorPath</key>
+    <string>@LOG_FILE@</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>

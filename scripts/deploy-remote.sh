@@ -16,6 +16,31 @@
 #   --dry-run    print every remote command, change nothing
 #
 # The library checkout must sit beside this repo (go.mod has a `replace`).
+#
+# ---------------------------------------------------------------------------
+# macOS / launchd hosts
+# ---------------------------------------------------------------------------
+# This script needs ssh into the target. doom (Linux/systemd) is the normal
+# case. A Mac is NOT deployable this way out of the box: macOS ships with
+# Remote Login off, so `ssh $(hostname -s)` refuses and the script exits at step
+# 1 with "cannot reach ... over ssh". Two supported ways to ship to a Mac:
+#
+#   a) From the Mac itself, use its own installer (no ssh involved):
+#        ./scripts/install-exporter-macos.sh reinstall   # metrics exporter
+#        ./launch/service.sh reinstall                   # the server
+#
+#   b) From another machine, enable Remote Login first
+#      (System Settings > General > Sharing > Remote Login), then run this
+#      script with the Mac's ssh Host. Step 5 still smoke-tests on :11499 and
+#      step 6 still stops the agent before swapping, so the safety properties
+#      hold -- but note the Mac's launchd branch uses `launchctl kickstart -k`,
+#      which terminates the running server immediately. In-flight streaming
+#      requests are cut. Deploy to your own laptop when you are not mid-request.
+#
+# Detecting the Mac's unit: the launchd branch looks for
+# `gui/<uid>/personal.smolllm-server`, so the agent must already be installed
+# (launch/service.sh install). If nothing matches, the script installs the
+# binary and restarts nothing -- read its last line before assuming success.
 set -euo pipefail
 
 HOST="${1:-}"
@@ -166,6 +191,9 @@ case "$svc" in  systemd)
     run_remote 'systemctl --user is-active smolllm-server; curl -sf -m 5 http://127.0.0.1:11435/healthz || echo "healthz FAILED"'
     ;;
   launchd)
+    # kickstart -k terminates the running process at once: in-flight streaming
+    # requests are cut. There is no graceful drain in smolllm-server, so this
+    # is documented rather than fixed -- do not deploy to a Mac mid-request.
     run_remote "launchctl kickstart -k gui/\$(id -u)/personal.smolllm-server"
     sleep 4
     run_remote 'curl -sf -m 5 http://127.0.0.1:11435/healthz || echo "healthz FAILED"'

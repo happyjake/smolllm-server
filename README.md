@@ -224,6 +224,57 @@ cd ~/w/smolllm-server && SMOLLLM_SKIP_BUILD=1 bash launch/service.sh install
 `just` is optional — every recipe is a thin wrapper over `launch/service.sh`,
 which is plain bash.
 
+### The deploy script needs ssh — a bare Mac is not reachable
+
+`scripts/deploy-remote.sh` drives the target over ssh. Linux hosts (systemd)
+work as documented below. A Mac does **not** by default: macOS ships with Remote
+Login off, so `ssh $(hostname -s)` is refused and the script exits at step 1 with
+`cannot reach ... over ssh`. Two supported routes:
+
+```bash
+# a) on the Mac itself — no ssh involved
+./scripts/install-exporter-macos.sh reinstall   # metrics exporter (:9104)
+./launch/service.sh reinstall                   # the server
+
+# b) from elsewhere — enable System Settings > General > Sharing > Remote Login,
+#    then run the normal deploy with the Mac's ssh Host
+scripts/deploy-remote.sh <mac-ssh-host>
+```
+
+The launchd branch of the script calls `launchctl kickstart -k`, which kills the
+running server immediately — in-flight streaming requests are cut. Deploy to a
+laptop when you are not mid-request. If no `personal.smolllm-server` agent is
+installed under `gui/<uid>`, the script installs the binary and restarts
+nothing; read its final line rather than assuming success.
+
+### Metrics
+
+Both hosts expose Prometheus metrics through a small exporter
+(`scripts/smolllm_exporter.py`, port 9104). Prometheus does **not** scrape
+`:11435` directly: that port is loopback-only by design and needs a Bearer key
+that also spends credits, so the exporter holds the key instead and re-serves
+the numbers.
+
+| metric | meaning |
+| --- | --- |
+| `smolllm_attempts_total{alias,provider,model,outcome,phase}` | outcome = `ok` / `first_output_timeout` / `error` / `canceled` |
+| `smolllm_attempt_first_output_seconds` | time to first token, successful attempts only |
+| `smolllm_exporter_scrape_ok` | 1 if the last upstream scrape worked |
+
+`first_output_timeout` is the signal that separates "the model is sick" from "the
+proxy queued us and said nothing": a leg that never produced a first token is
+counted here, not as an error, so it never gets demoted out of an alias chain for
+something the transport did.
+
+The exporter absorbs the counter resets that every deploy causes (the server's
+counters live in RAM). Served raw, a deploy reads as a traffic collapse and
+`increase()` over a window spanning it silently returns only the post-restart
+half.
+
+**`phase` semantics:** exactly two values, `headers` (no response headers) and
+`stream` (headers arrived, no first token). A non-streaming request that stalls
+reports `stream` too — one phenomenon, one label.
+
 ### Linux / systemd user service
 
 Deploy with `scripts/deploy-remote.sh <ssh-host>` instead of copying a binary by
