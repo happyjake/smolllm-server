@@ -76,12 +76,17 @@ type attemptKey struct {
 	model    string
 	outcome  string
 	phase    string
+	// streaming splits the counter by transport mode. A blocking attempt's
+	// TTFT is the whole call, so mixing the two would make any query over this
+	// counter describe an average of two unrelated things.
+	streaming bool
 }
 
 type firstOutputKey struct {
-	alias    string
-	provider string
-	model    string
+	alias     string
+	provider  string
+	model     string
+	streaming bool
 }
 
 // firstOutputHist is a fixed-bucket histogram of first-token waits.
@@ -208,11 +213,12 @@ func (l *Ledger) recordAttemptLocked(alias string, event smolllm.RequestEvent) {
 	}
 
 	key := attemptKey{
-		alias:    alias,
-		provider: event.Provider,
-		model:    event.ModelName,
-		outcome:  outcome,
-		phase:    phase,
+		alias:     alias,
+		provider:  event.Provider,
+		model:     event.ModelName,
+		outcome:   outcome,
+		phase:     phase,
+		streaming: event.Streaming,
 	}
 	l.attempts[key]++
 
@@ -220,7 +226,10 @@ func (l *Ledger) recordAttemptLocked(alias string, event smolllm.RequestEvent) {
 	// "latency" is the budget itself, already visible as an outcome, and
 	// folding it in would drag the distribution toward whatever budget is set.
 	if outcome == OutcomeOK && event.TTFT > 0 {
-		fk := firstOutputKey{alias: alias, provider: event.Provider, model: event.ModelName}
+		fk := firstOutputKey{
+			alias: alias, provider: event.Provider, model: event.ModelName,
+			streaming: event.Streaming,
+		}
 		hist := l.firstOutput[fk]
 		if hist == nil {
 			hist = &firstOutputHist{Counts: make([]int64, len(firstOutputBounds)+1)}
@@ -247,15 +256,18 @@ type AttemptCount struct {
 	Model    string
 	Outcome  string
 	Phase    string
-	Count    int64
+	// Streaming is the transport mode; see attemptKey.
+	Streaming bool
+	Count     int64
 }
 
 // FirstOutputSample is one model's first-token wait distribution.
 type FirstOutputSample struct {
-	Alias    string
-	Provider string
-	Model    string
-	Bounds   []float64
+	Alias     string
+	Provider  string
+	Model     string
+	Streaming bool
+	Bounds    []float64
 	// Counts has len(Bounds)+1 entries; the last is the +Inf bucket. These are
 	// cumulative, matching Prometheus semantics so the two cannot diverge.
 	Counts []int64
@@ -272,7 +284,7 @@ func (l *Ledger) Attempts() []AttemptCount {
 	for k, n := range l.attempts {
 		out = append(out, AttemptCount{
 			Alias: k.alias, Provider: k.provider, Model: k.model,
-			Outcome: k.outcome, Phase: k.phase, Count: n,
+			Outcome: k.outcome, Phase: k.phase, Streaming: k.streaming, Count: n,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -309,7 +321,7 @@ func (l *Ledger) FirstOutputs() []FirstOutputSample {
 		}
 		out = append(out, FirstOutputSample{
 			Alias: k.alias, Provider: k.provider, Model: k.model,
-			Bounds: bounds, Counts: cumulative,
+			Streaming: k.streaming, Bounds: bounds, Counts: cumulative,
 			Sum: hist.Sum, Count: hist.Count,
 		})
 	}

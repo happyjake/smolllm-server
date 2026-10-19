@@ -26,11 +26,11 @@ func TestMetricsRendersAValidHistogram(t *testing.T) {
 	out := sb.String()
 
 	assert.Contains(t, out, "# TYPE smolllm_attempt_first_output_seconds histogram")
-	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_bucket{alias="agent",provider="p",model="m",le="0.5"} 1`)
-	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_bucket{alias="agent",provider="p",model="m",le="2"} 3`)
-	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_bucket{alias="agent",provider="p",model="m",le="+Inf"} 3`)
-	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_sum{alias="agent",provider="p",model="m"} 4.5`)
-	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_count{alias="agent",provider="p",model="m"} 3`)
+	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_bucket{alias="agent",provider="p",model="m",streaming="false",le="0.5"} 1`)
+	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_bucket{alias="agent",provider="p",model="m",streaming="false",le="2"} 3`)
+	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_bucket{alias="agent",provider="p",model="m",streaming="false",le="+Inf"} 3`)
+	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_sum{alias="agent",provider="p",model="m",streaming="false"} 4.5`)
+	assert.Contains(t, out, `smolllm_attempt_first_output_seconds_count{alias="agent",provider="p",model="m",streaming="false"} 3`)
 }
 
 func TestMetricsRendersAttemptCounters(t *testing.T) {
@@ -44,10 +44,11 @@ func TestMetricsRendersAttemptCounters(t *testing.T) {
 	out := sb.String()
 
 	assert.Contains(t, out, "# TYPE smolllm_attempts_total counter")
-	assert.Contains(t, out, `outcome="first_output_timeout",phase="headers"} 4`)
+	assert.Contains(t, out, `outcome="first_output_timeout",phase="headers",streaming="false"} 4`)
 	// Non-timeout outcomes still carry the phase label, empty, so the label set
-	// does not change shape between outcomes.
-	assert.Contains(t, out, `outcome="ok",phase=""} 10`)
+	// does not change shape between outcomes. streaming is always present for
+	// the same reason: a series must never appear or vanish by label shape.
+	assert.Contains(t, out, `outcome="ok",phase="",streaming="false"} 10`)
 }
 
 // A model name containing a quote or newline must not corrupt the scrape: one

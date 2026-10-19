@@ -28,9 +28,9 @@ func writeMetrics(w io.Writer, attempts []ledger.AttemptCount, firstOutputs []le
 		// Quote by hand, not with %q: %q would re-escape the backslashes
 		// escapeLabel just added, producing \\" for a doubled quote.
 		fmt.Fprintf(&b,
-			"smolllm_attempts_total{alias=\"%s\",provider=\"%s\",model=\"%s\",outcome=\"%s\",phase=\"%s\"} %d\n",
+			"smolllm_attempts_total{alias=\"%s\",provider=\"%s\",model=\"%s\",outcome=\"%s\",phase=\"%s\",streaming=\"%s\"} %d\n",
 			escapeLabel(a.Alias), escapeLabel(a.Provider), escapeLabel(a.Model),
-			escapeLabel(a.Outcome), escapeLabel(a.Phase), a.Count,
+			escapeLabel(a.Outcome), escapeLabel(a.Phase), boolLabel(a.Streaming), a.Count,
 		)
 	}
 
@@ -41,8 +41,9 @@ func writeMetrics(w io.Writer, attempts []ledger.AttemptCount, firstOutputs []le
 		b.WriteString("# TYPE smolllm_attempt_first_output_seconds histogram\n")
 	}
 	for _, s := range firstOutputs {
-		labels := fmt.Sprintf("alias=\"%s\",provider=\"%s\",model=\"%s\"",
-			escapeLabel(s.Alias), escapeLabel(s.Provider), escapeLabel(s.Model))
+		labels := fmt.Sprintf("alias=\"%s\",provider=\"%s\",model=\"%s\",streaming=\"%s\"",
+			escapeLabel(s.Alias), escapeLabel(s.Provider), escapeLabel(s.Model),
+			boolLabel(s.Streaming))
 		for i, bound := range s.Bounds {
 			fmt.Fprintf(&b,
 				"smolllm_attempt_first_output_seconds_bucket{%s,le=\"%s\"} %d\n",
@@ -60,6 +61,15 @@ func writeMetrics(w io.Writer, attempts []ledger.AttemptCount, firstOutputs []le
 	}
 
 	_, _ = io.WriteString(w, b.String())
+}
+
+// boolLabel renders a Prometheus label value for a boolean. Written out rather
+// than %t so the strings are a contract the dashboards and rules can pin.
+func boolLabel(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }
 
 // formatFloat renders a float without a trailing ".0" for whole numbers, so

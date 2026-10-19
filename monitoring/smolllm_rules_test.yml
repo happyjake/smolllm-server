@@ -39,15 +39,15 @@ tests:
   - interval: 1m
     input_series:
       # Healthy: everything under 5s. p90 ~4s, far below the threshold.
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="2"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="2"}'
         values: '0+0x20'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="5"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="5"}'
         values: '2+2x20'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="+Inf"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="+Inf"}'
         values: '2+2x20'
-      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="m"}'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="m",streaming="true"}'
         values: '2+2x20'
-      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="m"}'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="m",streaming="true"}'
         values: '4+4x20'
     alert_rule_test:
       - eval_time: 15m
@@ -58,17 +58,17 @@ tests:
     input_series:
       # Degraded: the mass has moved into the 60s bucket. This is the case the
       # alert exists for -- a leg that accepts and then queues.
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="5"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="5"}'
         values: '0+0x60'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="15"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="15"}'
         values: '0+0x60'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="60"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="60"}'
         values: '2+2x60'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",le="+Inf"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="m",streaming="true",le="+Inf"}'
         values: '2+2x60'
-      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="m"}'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="m",streaming="true"}'
         values: '2+2x60'
-      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="m"}'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="m",streaming="true"}'
         values: '60+60x60'
     alert_rule_test:
       # Enough samples for BOTH the 10m rate window and the `for: 10m` pending
@@ -99,15 +99,15 @@ tests:
   # ---------------------------------------------------------------------
   - interval: 1m
     input_series:
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",le="5"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",streaming="true",le="5"}'
         values: '0+0x60'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",le="60"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",streaming="true",le="60"}'
         values: '2+2x60'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",le="+Inf"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="probe",alias="a",provider="p",model="slow",streaming="true",le="+Inf"}'
         values: '2+2x60'
-      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="slow"}'
+      - series: 'smolllm_attempt_first_output_seconds_count{host="probe",alias="a",provider="p",model="slow",streaming="true"}'
         values: '2+2x60'
-      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="slow"}'
+      - series: 'smolllm_attempt_first_output_seconds_sum{host="probe",alias="a",provider="p",model="slow",streaming="true"}'
         values: '60+60x60'
     alert_rule_test:
       - eval_time: 30m
@@ -132,13 +132,13 @@ tests:
   # ---------------------------------------------------------------------
   - interval: 1m
     input_series:
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="5"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",streaming="true",le="5"}'
         values: '0+0x20'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="60"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",streaming="true",le="60"}'
         values: '0+0x20'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="120"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",streaming="true",le="120"}'
         values: '0+0x20'
-      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",le="+Inf"}'
+      - series: 'smolllm_attempt_first_output_seconds_bucket{host="quiet",alias="a",provider="p",model="m",streaming="true",le="+Inf"}'
         values: '0+1x20'
       - series: 'smolllm_attempt_first_output_seconds_count{host="quiet",alias="a",provider="p",model="m"}'
         values: '0+1x20'
