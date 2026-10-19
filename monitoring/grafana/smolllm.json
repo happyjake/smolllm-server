@@ -33,10 +33,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
           "expr": "histogram_quantile(0.9, sum by (host, le) (rate(smolllm_attempt_first_output_seconds_bucket{streaming=\"true\"}[5m])))",
           "legendFormat": "{{host}}",
           "refId": "A",
@@ -69,10 +65,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
           "expr": "sum by (host) (increase(smolllm_attempt_first_output_seconds_count{streaming=\"true\"}[5m]))/sum by (host) (increase(smolllm_attempts_total[5m]))",
           "legendFormat": "{{host}}",
           "refId": "A",
@@ -104,10 +96,6 @@
       },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
           "expr": "(sum by (alias) (increase(smolllm_attempts_total{outcome=\"first_output_timeout\"}[7d]) or increase(smolllm_attempts_total{outcome=~\"error|canceled\",phase!=\"stream\"}[7d])) or 0 * sum by (alias) (increase(smolllm_attempts_total[7d]))) / sum by (alias) (increase(smolllm_attempts_total[7d]))",
           "legendFormat": "{{alias}}",
           "refId": "A",

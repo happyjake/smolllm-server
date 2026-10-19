@@ -1,0 +1,77 @@
+groups:
+  - name: smolllm
+    interval: 30s
+    rules:
+      # First-token latency. Baseline on mc4 today: p50 ~3s, p90 ~6s, p99 <10s
+      # (75 attempts, all under 10s; buckets above 10 are empty). Warn at 15s
+      # because that is past every observed sample but well under the 30s
+      # first_output_timeout -- by the time the guard fires, the user has
+      # already felt it for twice as long.
+      - alert: SmolllmFirstTokenSlow
+        expr: |
+          histogram_quantile(0.9,
+            # `le` must stay in this grouping: histogram_quantile needs the
+            # bucket boundaries, and without them it returns an empty result
+            # rather than an error -- the alert then looks healthy while being
+            # unable to fire. Verified.
+            # streaming="true" is pinned, not aggregated away. A blocking
+            # attempt's TTFT is the whole call, so folding it in would move p90
+            # toward the blocking duration and the alert would describe a
+            # mixture of two unrelated measurements. Pinning also keeps the
+            # gate measuring the same population as the histogram -- when the
+            # label was introduced, unpinned series from before the deploy go
+            # flat rather than joining the average.
+            sum by (host, le) (rate(smolllm_attempt_first_output_seconds_bucket{streaming="true"}[10m]))
+          ) > 15
+          # Volume gate. `histogram_quantile` consumes `le`, so its output is
+          # just {host=...} -- the same shape as the gate below, which is why
+          # this join matches. Stated explicitly with `on (host)` so a reader
+          # does not have to know that to trust the expression.
+          and on (host)
+          sum by (host) (rate(smolllm_attempt_first_output_seconds_count{streaming="true"}[10m])) > 0.02
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "smolllm {{ $labels.host }}: first token is slow (p90 {{ $value | printf \"%.1f\" }}s)"
+          runbook: |
+            p90 over 15s means every tenth request waits a quarter-minute for a first
+            token. Check which alias/leg: sum by (alias,provider,model)
+            (rate(smolllm_attempt_first_output_seconds_bucket[10m])). If one leg is
+            responsible, it is queueing rather than failing, so fallback will never
+            fire -- remove it from the chain by hand or lower first_output_timeout to
+            force the switch.
+
+      # A leg that never produced a first token. This is the incident this whole
+      # feature exists for: the model was blamed for a proxy that queued the call.
+      # Kept separate from `error` on purpose -- they need different reactions.
+      - alert: SmolllmFirstOutputTimeouts
+        expr: |
+          # Keep outcome and phase in the grouping: they are what tells you
+          # which failure mode fired. Without them the alert says "no first
+          # token from p/m" and you still have to go query to find out whether
+          # it stalled in headers or stream.
+          sum by (host,alias,provider,model,outcome,phase) (rate(smolllm_attempts_total{outcome="first_output_timeout"}[15m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "smolllm {{ $labels.host }}: {{ $labels.provider }}/{{ $labels.model }} produced no first token"
+          runbook: |
+            The leg accepted the request and said nothing until the guard fired, so
+            the user waited the full first_output_timeout and then paid for a retry.
+            Distinguish queueing from a dead endpoint: a dead endpoint usually fails
+            earlier with `error` (connection/5xx). Repeated first_output_timeout with
+            no errors points at an overloaded or throttling upstream.
+
+      # Last resort: the exporter itself stopped producing. Without this, every
+      # alert above is silently unfirable and the dashboards just go flat.
+      - alert: SmolllmMetricsStale
+        expr: smolllm_exporter_scrape_ok == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "smolllm {{ $labels.host }}: metrics exporter cannot reach the server"
+          runbook: |
+            The exporter is up but its upstream scrape failed, so the counters above
+            are frozen at their last good values. Check the server:
+            systemctl --user status smolllm-server (doom) or
+            launchctl print gui/$(id -u)/personal.smolllm-server (mc4).
