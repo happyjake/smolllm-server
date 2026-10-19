@@ -221,3 +221,26 @@ tests:
       - eval_time: 10m
         alertname: SmolllmMetricsStale
         exp_alerts: []
+
+  # ---------------------------------------------------------------------
+  # Dashboard panel: Hang share (7d)
+  # ---------------------------------------------------------------------
+  # The panel's expression, fed the series a real streamed timeout produces.
+  # A dashboard query that merely parses still draws an empty panel, so the
+  # value is asserted here: 1 stalled leg out of 16 attempts must read 0.25.
+  # This is the timeout half of the panel -- the half that had no production
+  # data until the streaming hook fix, because a streamed first-output timeout
+  # recorded nothing at all.
+  - interval: 1m
+    input_series:
+      - series: 'smolllm_attempts_total{host="mc4",alias="agent",provider="p",model="m",outcome="first_output_timeout",phase="stream",streaming="true"}'
+        values: '0+1x15'
+      - series: 'smolllm_attempts_total{host="mc4",alias="agent",provider="p",model="m",outcome="ok",phase="",streaming="true"}'
+        values: '0+3x15'
+    promql_expr_test:
+      - expr: |
+          (sum by (alias) (increase(smolllm_attempts_total{outcome="first_output_timeout"}[7d]) or increase(smolllm_attempts_total{outcome=~"error|canceled",phase!="stream"}[7d])) or 0 * sum by (alias) (increase(smolllm_attempts_total[7d]))) / sum by (alias) (increase(smolllm_attempts_total[7d]))
+        eval_time: 15m
+        exp_samples:
+          - labels: '{alias="agent"}'
+            value: 0.25
