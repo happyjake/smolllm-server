@@ -22,6 +22,11 @@ Semantics — the part that decides whether the graphs mean anything:
   undoing the protection for that one window. Deploys of smolllm-server are
   frequent, deploys of this file are not — that is the trade.
 
+  That residual gap is closed by SMOLLLM_EXPORTER_STATE: the baseline is
+  written to disk (atomically, after every successful scrape) and reloaded at
+  startup, so an exporter restart no longer resets the lifetime counters. The
+  file holds only series keys and numbers — never the access key.
+
 py3.6 stdlib only (rage is 3.6.8; this host is python3 too).
 """
 import base64
@@ -52,6 +57,12 @@ CONFIG = os.path.expanduser("~/.config/smolllm-server/config.yaml")
 INTERVAL = float(os.environ.get("SMOLLLM_EXPORTER_INTERVAL", "30"))
 TIMEOUT = 10.0
 
+# Baseline persistence. Empty = memory only (previous behaviour). Set it to a
+# file to make the lifetime counters survive this process restarting; without
+# it, restarting the exporter silently throws away everything it had
+# accumulated, which is exactly the "trustworthy for a week" property we need.
+STATE_FILE = os.environ.get("SMOLLLM_EXPORTER_STATE", "")
+
 # Restart-proof state: for each series key, the highest raw value seen so far
 # and the accumulated value from before the last reset.
 _lock = threading.Lock()
@@ -61,6 +72,74 @@ _payload = "# smolllm exporter warming up\n"
 _scrape_ok = 0
 _scrape_fail = 0
 _last_error = ""
+_state_dirty = False
+_state_write_failed = False
+
+
+def load_state(path=None):
+    """Load the persisted baseline. Missing or unreadable state is non-fatal.
+
+    A corrupt state file must never poison the counters: parse errors fall back
+    to an empty baseline (counters restart from zero, which is the same
+    behaviour as before this feature) rather than crashing the exporter or, far
+    worse, importing a wrong number and serving it as truth.
+    """
+    path = STATE_FILE if path is None else path
+    if not path:
+        return 0
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        if not isinstance(exc, FileNotFoundError):
+            print("warn: ignoring unreadable state %s: %s" % (path, exc), file=sys.stderr)
+        return 0
+    if not isinstance(data, dict):
+        print("warn: state file %s is not an object; ignoring" % path, file=sys.stderr)
+        return 0
+    base = data.get("baseline")
+    last = data.get("last_raw")
+    loaded = 0
+    if isinstance(base, dict):
+        for k, v in base.items():
+            if isinstance(v, (int, float)) and v >= 0:
+                _baseline[k] = float(v)
+                loaded += 1
+    if isinstance(last, dict):
+        for k, v in last.items():
+            if isinstance(v, (int, float)) and v >= 0:
+                _last_raw[k] = float(v)
+    return loaded
+
+
+def save_state(path=None):
+    """Atomically persist the baseline.
+
+    Write to a temp file in the same directory then rename: a crash mid-write
+    leaves the previous good file in place instead of a truncated one. Must be
+    called with _lock held.
+    """
+    global _state_write_failed
+    path = STATE_FILE if path is None else path
+    if not path:
+        return
+    tmp = path + ".tmp"
+    try:
+        d = os.path.dirname(path)
+        if d and not os.path.isdir(d):
+            os.makedirs(d)
+        with open(tmp, "w") as fh:
+            json.dump({"baseline": _baseline, "last_raw": _last_raw}, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        _state_write_failed = False
+    except OSError as exc:
+        # Keep serving. A monitoring process that dies because its own
+        # bookkeeping file is unwritable is worse than one that degrades.
+        if not _state_write_failed:
+            print("warn: cannot persist state to %s: %s" % (path, exc), file=sys.stderr)
+            _state_write_failed = True
 
 
 def read_access_key():
@@ -205,6 +284,17 @@ def poll_loop():
                 _payload = payload
                 _scrape_ok += 1
                 _last_error = ""
+                # Persist after every successful scrape: this is the write that
+                # makes the lifetime counters survive an exporter restart. It is
+                # cheap (a few KB) and happens on the poll thread, not the
+                # serving thread, so a slow disk cannot delay a scrape.
+                save_state()
+                _payload += (
+                    "# HELP smolllm_exporter_state_saved Whether the baseline is being persisted to disk (0 = memory only).\n"
+                    "# TYPE smolllm_exporter_state_saved gauge\n"
+                    "smolllm_exporter_state_saved %d\n"
+                    % (1 if (STATE_FILE and not _state_write_failed) else 0)
+                )
         except Exception as exc:  # noqa: BLE001 - a monitoring process must not die
             with _lock:
                 _scrape_fail += 1
@@ -242,6 +332,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
+    loaded = load_state()
+    if STATE_FILE:
+        print("state: %s (%d baseline entries restored)" % (STATE_FILE, loaded))
     threading.Thread(target=poll_loop, daemon=True).start()
     srv = http.server.HTTPServer(LISTEN, Handler)
     print("smolllm exporter serving on %s:%d -> %s" % (LISTEN[0], LISTEN[1], UPSTREAM))

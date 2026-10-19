@@ -19,6 +19,9 @@ readonly TEMPLATE="${REPO_ROOT}/launch/${PLIST}.template"
 readonly EXPORTER_PATH="${REPO_ROOT}/scripts/smolllm_exporter.py"
 readonly TARGET="${HOME}/Library/LaunchAgents/${PLIST}"
 readonly LOG_FILE="${HOME}/Library/Logs/${LABEL}.log"
+# Persisted baseline: without this the lifetime counters are thrown away every
+# time the exporter restarts, which makes a week of data untrustworthy.
+readonly STATE_FILE="${HOME}/Library/Application Support/${LABEL}/state.json"
 readonly RUN_USER="${USER:-$(id -un)}"
 
 usage() {
@@ -52,13 +55,15 @@ render() {
     local py
     py="$(python_bin)"
     [[ -f "${TEMPLATE}" ]] || { echo "error: missing template ${TEMPLATE}" >&2; exit 1; }
-    mkdir -p "$(dirname "${TARGET}")" "$(dirname "${LOG_FILE}")"
+    mkdir -p "$(dirname "${TARGET}")" "$(dirname "${LOG_FILE}")" \
+             "$(dirname "${STATE_FILE}")"
     sed -e "s|@PYTHON@|${py}|g" \
         -e "s|@EXPORTER_PATH@|${EXPORTER_PATH}|g" \
         -e "s|@WORKING_DIR@|${REPO_ROOT}|g" \
         -e "s|@HOME@|${HOME}|g" \
         -e "s|@USER@|${RUN_USER}|g" \
         -e "s|@LOG_FILE@|${LOG_FILE}|g" \
+        -e "s|@STATE_FILE@|${STATE_FILE}|g" \
         "${TEMPLATE}" >"${TARGET}"
     echo "rendered ${TARGET} (python: ${py})"
 }

@@ -8,6 +8,7 @@ trustworthy: smolllm-server's counters are in RAM, so every deploy resets them
 to zero. Served verbatim, Prometheus reads a deploy as a catastrophic drop.
 """
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -97,6 +98,92 @@ class TransformTest(unittest.TestCase):
     def test_integer_formatting_has_no_decimal_point(self):
         self.assertEqual(ex._fmt(5.0), "5")
         self.assertEqual(ex._fmt(1.5), "1.5")
+
+
+class PersistenceTest(unittest.TestCase):
+    """The baseline must survive this process restarting.
+
+    Without it, restarting the exporter silently discards everything it had
+    accumulated -- the counters look fine but the week is gone.
+    """
+
+    def setUp(self):
+        import tempfile
+        ex._baseline.clear()
+        ex._last_raw.clear()
+        fd, self.path = tempfile.mkstemp(suffix=".state")
+        os.close(fd)
+        os.unlink(self.path)
+
+    def tearDown(self):
+        for p in (self.path, self.path + ".tmp"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    def test_baseline_survives_a_restart(self):
+        # Incarnation 1: 80 then a deploy resets to 0, then 3.
+        for raw in (80.0, 0.0, 3.0):
+            ex.restart_safe_counter("k", raw)
+        before = ex.restart_safe_counter("k", 3.0)
+        ex.save_state(self.path)
+
+        # Process dies. Fresh memory, same file.
+        ex._baseline.clear()
+        ex._last_raw.clear()
+        self.assertEqual(ex.load_state(self.path), 1)
+
+        # Incarnation 2 must continue, not restart.
+        self.assertEqual(ex.restart_safe_counter("k", 4.0), before + 1)
+
+    def test_saved_state_contains_no_secret(self):
+        ex.restart_safe_counter("k", 7.0)
+        ex.save_state(self.path)
+        with open(self.path) as fh:
+            body = fh.read()
+        self.assertIn("k", body)
+        self.assertNotIn("access_key", body.lower())
+        self.assertNotIn("Bearer", body)
+
+    def test_state_file_is_written_atomically(self):
+        # No leftover .tmp after a successful save, and the file is valid JSON.
+        ex.restart_safe_counter("k", 3.0)
+        ex.save_state(self.path)
+        self.assertFalse(os.path.exists(self.path + ".tmp"))
+        with open(self.path) as fh:
+            self.assertIn("baseline", json.load(fh))
+
+    def test_corrupt_state_is_ignored_not_imported(self):
+        # A truncated/garbage file must not crash the exporter, and must not
+        # seed a wrong baseline that would then be served as truth.
+        with open(self.path, "w") as fh:
+            fh.write('{"baseline": {"k": 99')  # truncated
+        self.assertEqual(ex.load_state(self.path), 0)
+        self.assertEqual(ex._baseline, {})
+        self.assertEqual(ex.restart_safe_counter("k", 5.0), 5.0)
+
+    def test_negative_and_non_numeric_entries_are_dropped(self):
+        with open(self.path, "w") as fh:
+            json.dump({"baseline": {"good": 10.0, "neg": -5, "str": "x"},
+                       "last_raw": {"good": 3.0}}, fh)
+        self.assertEqual(ex.load_state(self.path), 1)
+        self.assertEqual(ex._baseline, {"good": 10.0})
+
+    def test_missing_file_is_not_an_error(self):
+        self.assertEqual(ex.load_state(self.path), 0)
+
+    def test_unwritable_path_does_not_raise(self):
+        # A monitoring process must not die because its bookkeeping file is
+        # unwritable; it degrades to memory-only and says so.
+        ex.restart_safe_counter("k", 1.0)
+        ex.save_state("/proc/definitely/not/writable/state.json")
+        self.assertEqual(ex.restart_safe_counter("k", 2.0), 2.0)
+
+    def test_no_state_file_configured_is_a_noop(self):
+        ex.restart_safe_counter("k", 1.0)
+        ex.save_state("")          # empty = memory only
+        self.assertEqual(ex.load_state(""), 0)
 
 
 if __name__ == "__main__":

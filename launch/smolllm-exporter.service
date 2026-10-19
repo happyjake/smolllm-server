@@ -10,6 +10,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h
 Environment=HOME=%h
+# Persisted baseline: without this the lifetime counters reset every time this
+# unit restarts, which makes a week of data untrustworthy.
+Environment=SMOLLLM_EXPORTER_STATE=%h/.local/state/smolllm-exporter/state.json
+StateDirectory=smolllm-exporter
+ExecStartPre=/usr/bin/mkdir -p %h/.local/state/smolllm-exporter
 ExecStart=/usr/bin/python3 %h/.local/bin/smolllm_exporter.py
 Restart=always
 RestartSec=5

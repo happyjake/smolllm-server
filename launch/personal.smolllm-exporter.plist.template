@@ -25,6 +25,8 @@
         <string>@HOME@</string>
         <key>PATH</key>
         <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>SMOLLLM_EXPORTER_STATE</key>
+        <string>@STATE_FILE@</string>
         <key>USER</key>
         <string>@USER@</string>
     </dict>
