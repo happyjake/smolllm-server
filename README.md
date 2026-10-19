@@ -226,7 +226,16 @@ which is plain bash.
 
 ### Linux / systemd user service
 
-Build the binary for the target architecture on a host with Go. Keep
+Deploy with `scripts/deploy-remote.sh <ssh-host>` instead of copying a binary by
+hand. It asks the target what it is, cross-compiles for that platform, rejects
+an artifact whose `file` description does not match, proves the binary serves
+`/healthz` on a spare port **before** replacing anything, and only then stops
+the service to swap. A macOS binary copied to the Linux host fails with
+`status=203/EXEC` and restart-loops; the script turns that into a build-time
+error. Use `--build-only` or `--dry-run` to inspect without deploying.
+
+Building by hand, for reference — build the binary for the target
+architecture on a host with Go. Keep
 `smolllm-go` beside the server checkout, as required by `go.mod`:
 
 ```bash
