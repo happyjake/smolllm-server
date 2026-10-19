@@ -14,7 +14,7 @@
   "panels": [
     {
       "type": "timeseries",
-      "title": "First output p90 (streaming)",
+      "title": "First output latency p50 / p90 / p99 (streaming)",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -27,20 +27,35 @@
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 8
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.9, sum by (host, le) (rate(smolllm_attempt_first_output_seconds_bucket{streaming=\"true\"}[5m])))",
-          "legendFormat": "{{host}}",
+          "expr": "histogram_quantile(0.5, sum by (host, le) (rate(smolllm_attempt_first_output_seconds_bucket{streaming=\"true\"}[5m])))",
+          "legendFormat": "p50 {{host}}",
           "refId": "A",
+          "instant": false,
+          "range": true
+        },
+        {
+          "expr": "histogram_quantile(0.9, sum by (host, le) (rate(smolllm_attempt_first_output_seconds_bucket{streaming=\"true\"}[5m])))",
+          "legendFormat": "p90 {{host}}",
+          "refId": "B",
+          "instant": false,
+          "range": true
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (host, le) (rate(smolllm_attempt_first_output_seconds_bucket{streaming=\"true\"}[5m])))",
+          "legendFormat": "p99 {{host}}",
+          "refId": "C",
           "instant": false,
           "range": true
         }
       ],
-      "description": "Time to first byte on a streamed attempt. Blocking attempts are excluded: their TTFT is the whole call, so mixing them would describe neither."
+      "description": "Time to first byte on a streamed attempt, at three quantiles. p50 is the typical turn; the p90-p99 gap is what the tail costs. Blocking attempts are excluded: their TTFT is the whole call, so mixing them would describe neither. Alerting is on p90 alone (rage rules-smolllm.yml); p50/p99 are here to explain a p90 alert, not to fire one."
     },
     {
       "type": "timeseries",
