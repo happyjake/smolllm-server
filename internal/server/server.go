@@ -42,6 +42,9 @@ func New(store *config.Store, logger *slog.Logger) *Server {
 	mux.Handle("POST /v1/embeddings", authMW(http.HandlerFunc(h.embeddings)))
 	mux.Handle("GET /v1/models", authMW(http.HandlerFunc(h.models)))
 	mux.Handle("GET /stats", authMW(http.HandlerFunc(h.stats)))
+	// Authenticated like /stats: the counters carry provider/model names and
+	// traffic volume, which is not public information.
+	mux.Handle("GET /metrics", authMW(http.HandlerFunc(h.metrics)))
 	mux.Handle("GET /version", authMW(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(buildinfo.Current())
