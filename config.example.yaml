@@ -15,6 +15,9 @@ server:
   # provider would pin every request to leg 1. A client `timeout` field
   # overrides this. 0 / absent = library default. Hot-reloads.
   request_timeout: 90
+  # Kill switch for the shared account breaker (structured 14019 quota
+  # rejections skip that credential across requests). Hot-reloads.
+  # disable_account_breaker: false
 
 # Aliases map a logical name to a comma-separated provider/model fallback chain.
 # smolllm-go tries each entry in order and falls back on errors.

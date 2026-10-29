@@ -55,9 +55,18 @@ each in order and falls back on error.
   is surfaced rather than silently switching models and replaying output.
   Failover is safe before first usable output; tool-only streams are gated
   until their complete tool calls arrive.
-- This implementation has no cross-request circuit breaker or separate
-  first-byte timeout: `request_timeout` bounds the complete upstream attempt.
-  Do not infer those features from older operational notes.
+- **Account quota exhaustion is shared across requests.** A 429 whose JSON
+  body carries business code `14019` (the doom/aitoken account-quota code)
+  marks that provider *credential* exhausted: later legs on the same account
+  in the request are skipped, and one process-wide account breaker makes
+  every chat request skip it until a cooldown (5 min, doubling to 1 h). After
+  the cooldown one real request probes it; success closes it. If every leg is
+  skipped or fails, the open accounts are tried anyway (fail-open). Any other
+  429, including other structured codes, stays model-local. Embeddings do not
+  use the breaker. `server.disable_account_breaker: true` (hot-reloads)
+  restores plain per-request fallback.
+- There is no separate first-byte timeout: `request_timeout` bounds the
+  complete upstream attempt.
 - What never triggers fallback: a leg that answers *plausibly but badly*
   (ignoring `tools`, dropping an image). Probe every leg before trusting it
   (see "Choosing alias chains").
@@ -259,6 +268,12 @@ the numbers.
 | --- | --- |
 | `smolllm_attempts_total{alias,provider,model,outcome,phase}` | outcome = `ok` / `first_output_timeout` / `error` / `canceled` |
 | `smolllm_attempt_first_output_seconds` | time to first token, successful attempts only |
+| `smolllm_account_circuit_transitions_total{provider,account,transition}` | `opened` / `closed` account circuits (`account` = 12-hex credential fingerprint, never the key) |
+| `smolllm_account_circuit_skips_total{alias,provider,account,model,reason}` | legs skipped with no upstream call; reason = `circuit_open` / `exhausted_in_request` |
+| `smolllm_account_circuit_probes_total{alias,provider,account,model}` | half-open probes after a cooldown |
+| `smolllm_account_circuit_fail_open_total{alias,provider,account,model}` | open-account legs tried because nothing else succeeded |
+| `smolllm_account_circuit_state{provider,account,state}` | one-hot `closed` / `open` / `half_open` per account seen since start |
+| `smolllm_unrecognized_structured_429_total{alias,provider,account,model}` | JSON-bodied 429s without a known account code (model-local) |
 | `smolllm_exporter_scrape_ok` | 1 if the last upstream scrape worked |
 
 `first_output_timeout` is the signal that separates "the model is sick" from "the

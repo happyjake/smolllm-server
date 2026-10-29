@@ -48,6 +48,11 @@ type ServerConfig struct {
 	// used only to validate the first-output budgets above. Defaults to 300s,
 	// the pi client's documented header timeout.
 	ClientHeaderTimeout float64 `yaml:"client_header_timeout"`
+	// DisableAccountBreaker stops chat calls from sharing the process-wide
+	// account circuit breaker, restoring plain per-request fallback: a
+	// structured quota rejection then affects only the leg that returned it.
+	// Read per request, so it hot-reloads. Off (breaker on) by default.
+	DisableAccountBreaker bool `yaml:"disable_account_breaker"`
 }
 
 // Load reads YAML from path, applies env overrides and defaults, and validates.

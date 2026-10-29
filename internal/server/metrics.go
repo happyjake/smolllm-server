@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,5 +95,8 @@ func (h *handlers) metrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	// A half-written scrape is worse than an old one: the scraper would record
 	// truncation as a real drop in counters. Render in full, then send.
-	writeMetrics(w, h.ledger.Attempts(), h.ledger.FirstOutputs())
+	var b bytes.Buffer
+	writeMetrics(&b, h.ledger.Attempts(), h.ledger.FirstOutputs())
+	h.accounts.write(&b, h.breaker.Circuits())
+	_, _ = w.Write(b.Bytes())
 }

@@ -30,6 +30,11 @@ func (h *handlers) chat(w http.ResponseWriter, r *http.Request) {
 		ledgerHook(e)
 		billing.record(e)
 	}))
+	if !h.cfg().Server.DisableAccountBreaker {
+		opts = append(opts,
+			smolllm.WithAccountBreaker(h.breaker),
+			smolllm.WithAccountEventHook(h.accounts.hook(req.Model)))
+	}
 
 	if req.Stream {
 		includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage

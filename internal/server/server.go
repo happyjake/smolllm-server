@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rocry/smolllm-go/smolllm"
 	"github.com/rocry/smolllm-server/internal/auth"
 	"github.com/rocry/smolllm-server/internal/buildinfo"
 	"github.com/rocry/smolllm-server/internal/config"
@@ -30,7 +31,10 @@ func New(store *config.Store, logger *slog.Logger) *Server {
 	cfg := store.Get()
 
 	mux := http.NewServeMux()
-	h := &handlers{store: store, logger: logger, ledger: ledger.New()}
+	h := &handlers{
+		store: store, logger: logger, ledger: ledger.New(),
+		breaker: smolllm.NewAccountBreaker(), accounts: newAccountMetrics(),
+	}
 
 	// Public routes (no auth)
 	mux.HandleFunc("GET /healthz", h.health)

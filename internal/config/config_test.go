@@ -187,3 +187,19 @@ func TestLoadEnvFile_LoadsKeysWithoutOverwriting(t *testing.T) {
 	require.Equal(t, "preexisting", os.Getenv("FOO_API_KEY")) // not overwritten
 	require.Equal(t, "http://x", os.Getenv("BAR_BASE_URL"))   // newly set
 }
+
+func TestLoad_AccountBreakerOnUnlessDisabled(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("server:\n  access_key: k\naliases:\n  x: foo/bar\n"), 0o600))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.False(t, cfg.Server.DisableAccountBreaker)
+
+	require.NoError(t, os.WriteFile(path, []byte(
+		"server:\n  access_key: k\n  disable_account_breaker: true\naliases:\n  x: foo/bar\n"), 0o600))
+	cfg, err = Load(path)
+	require.NoError(t, err)
+	require.True(t, cfg.Server.DisableAccountBreaker)
+}

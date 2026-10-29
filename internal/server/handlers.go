@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/rocry/smolllm-go/smolllm"
 	"github.com/rocry/smolllm-server/internal/apierr"
 	"github.com/rocry/smolllm-server/internal/config"
 	"github.com/rocry/smolllm-server/internal/ledger"
@@ -14,6 +15,10 @@ type handlers struct {
 	store  *config.Store
 	logger *slog.Logger
 	ledger *ledger.Ledger
+	// breaker is shared by every chat call in the process: one request's
+	// structured quota rejection is what lets the next skip that account.
+	breaker  *smolllm.AccountBreaker
+	accounts *accountMetrics
 }
 
 // cfg returns the current config snapshot. Always call this — never cache
