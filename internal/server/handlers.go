@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"unicode"
 
 	"github.com/rocry/smolllm-go/smolllm"
 	"github.com/rocry/smolllm-server/internal/apierr"
@@ -45,14 +46,16 @@ func badRequest(w http.ResponseWriter, message string) {
 const maxRequestModelLen = 256
 
 // validateModelName rejects requested models that can only be hostile or
-// malformed: absurdly long, or carrying control characters (a NUL would
-// corrupt account-breaker key parsing, the rest only poison output).
+// malformed: absurdly long, or carrying control or format characters (a NUL
+// would corrupt account-breaker key parsing; rune-level detection also
+// catches the C1 range that UTF-8 hides from a byte scan, and Cf covers the
+// BiDi overrides and zero-width formats that poison display).
 func validateModelName(model string) error {
 	if len(model) > maxRequestModelLen {
 		return fmt.Errorf("model name longer than %d bytes", maxRequestModelLen)
 	}
-	for i := 0; i < len(model); i++ {
-		if model[i] < 0x20 || model[i] == 0x7f {
+	for _, r := range model {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return errors.New("model name contains control characters")
 		}
 	}

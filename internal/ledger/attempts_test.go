@@ -181,3 +181,31 @@ func TestDayBucketsAreCapped(t *testing.T) {
 		day: time.Now().UTC().Format(time.DateOnly), alias: "agent", provider: "doom", model: "unique-0",
 	}].Requests, "an existing bucket keeps counting past the cap")
 }
+
+// Pruning runs before the cap check: expired rows release capacity on every
+// Record, so a full map of stale rows must admit a fresh row.
+func TestPruneRunsBeforeTheBucketCap(t *testing.T) {
+	t.Parallel()
+
+	l := New()
+	l.maxBucketSeries = 2
+	// Seed two expired rows directly: recording them through Record would
+	// prune them right away, and the scenario under test is a map already
+	// full of stale rows when a fresh key arrives.
+	stale := time.Now().UTC().AddDate(0, 0, -40).Format(time.DateOnly)
+	for i := 0; i < 2; i++ {
+		l.buckets[bucketKey{day: stale, alias: "agent", provider: "doom", model: fmt.Sprintf("stale-%d", i)}] = Bucket{
+			Day: stale, Alias: "agent", Provider: "doom", Model: fmt.Sprintf("stale-%d", i), Requests: 1,
+		}
+	}
+	require.Len(t, l.buckets, 2)
+
+	l.Record("agent", smolllm.RequestEvent{
+		Usage:     smolllm.Usage{Provider: "doom", ModelName: "fresh"},
+		Timestamp: time.Now(),
+	})
+	today := time.Now().UTC().Format(time.DateOnly)
+	key := bucketKey{day: today, alias: "agent", provider: "doom", model: "fresh"}
+	assert.EqualValues(t, 1, l.buckets[key].Requests, "stale rows were pruned and the fresh row was recorded")
+	assert.Len(t, l.buckets, 1, "only the fresh row remains")
+}

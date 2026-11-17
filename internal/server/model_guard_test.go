@@ -50,3 +50,30 @@ func TestHostileModelNamesAreRejectedAtTheEmbeddingsDoor(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
+
+func TestValidateModelNameTable(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		model string
+		ok    bool
+	}{
+		{"plain", "doom/hy4flash", true},
+		{"chinese", "混元/极速", true},
+		{"c1 control", "bo\u0085t", false}, // NEL, hidden from a byte scan
+		{"bidi override", "bo\u202et", false},
+		{"tab", "bo\tt", false},
+		{"nul", "bo\x00t", false},
+		{"overlong", strings.Repeat("m", maxRequestModelLen+1), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.ok {
+				assert.NoError(t, validateModelName(tc.model))
+			} else {
+				assert.Error(t, validateModelName(tc.model))
+			}
+		})
+	}
+}

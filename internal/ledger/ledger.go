@@ -146,6 +146,11 @@ func (l *Ledger) Record(alias string, event smolllm.RequestEvent) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Prune before the cap check: expired rows must release capacity on every
+	// Record, not only when someone happens to hit /stats, and the map being
+	// full of stale rows must not starve fresh ones.
+	l.pruneLocked(time.Now().UTC())
+
 	key := bucketKey{
 		day:      event.Timestamp.UTC().Format(time.DateOnly),
 		alias:    alias,
@@ -184,7 +189,6 @@ func (l *Ledger) Record(alias string, event smolllm.RequestEvent) {
 		bucket.EstimatedRequests++
 	}
 	l.buckets[key] = bucket
-	l.pruneLocked(time.Now().UTC())
 }
 
 // Snapshot returns a stable, sorted copy of retained buckets.
