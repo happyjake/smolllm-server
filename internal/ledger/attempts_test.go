@@ -3,6 +3,7 @@ package ledger
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -128,4 +129,30 @@ func TestTimeoutTTFTDoesNotBiasTheHistogram(t *testing.T) {
 		Error:              &smolllm.FirstOutputTimeoutError{Model: "m", Phase: "stream"},
 	})
 	assert.Empty(t, l.FirstOutputs(), "an abandoned attempt is not a latency observation")
+}
+
+// The model label arrives from requests, so both per-series maps are capped:
+// past the cap an existing series keeps counting and an unseen one is dropped.
+func TestAttemptSeriesAreCapped(t *testing.T) {
+	t.Parallel()
+
+	l := New()
+	l.maxAttemptSeries = 3
+	l.maxFirstOutputSeries = 3
+	for i := 0; i < 10; i++ {
+		l.Record("agent", smolllm.RequestEvent{
+			Usage:     smolllm.Usage{Provider: "doom", ModelName: fmt.Sprintf("unique-%d", i), TTFT: 2 * time.Second},
+			Timestamp: time.Now(),
+		})
+	}
+	assert.Len(t, l.attempts, 3, "no new attempt series past the cap")
+	assert.Len(t, l.firstOutput, 3, "no new histogram series past the cap")
+
+	l.Record("agent", smolllm.RequestEvent{
+		Usage:     smolllm.Usage{Provider: "doom", ModelName: "unique-0", TTFT: 2 * time.Second},
+		Timestamp: time.Now(),
+	})
+	assert.Equal(t, int64(2), l.attempts[attemptKey{
+		alias: "agent", provider: "doom", model: "unique-0", outcome: OutcomeOK,
+	}], "an existing series keeps counting past the cap")
 }

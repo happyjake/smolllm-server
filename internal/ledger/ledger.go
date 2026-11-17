@@ -54,11 +54,19 @@ type Ledger struct {
 	// "is this model healthy right now", and a day boundary would reset the
 	// answer exactly when someone is looking at it.
 	attempts map[attemptKey]int64
+	// maxAttemptSeries bounds len(attempts): the model label arrives from
+	// requests (not only configured chains), so series creation is capped —
+	// an existing series keeps counting, an unseen one past the cap is
+	// dropped. A field so tests can shrink it.
+	maxAttemptSeries int
 	// firstOutput counts, per alias and model, how long attempts waited before
 	// their first token. A histogram rather than an average because the shape
 	// is the point: a normal distribution of 1-3s with a spike at the budget
 	// means queueing, while a fat tail below it means a general slowdown.
 	firstOutput map[firstOutputKey]*firstOutputHist
+	// maxFirstOutputSeries bounds len(firstOutput) for the same reason as
+	// maxAttemptSeries. A field so tests can shrink it.
+	maxFirstOutputSeries int
 }
 
 // Attempt outcomes. A queued leg is separated from a broken one on purpose:
@@ -103,12 +111,20 @@ type firstOutputHist struct {
 // already abandoned.
 var firstOutputBounds = []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120}
 
+// maxLedgerSeries bounds the process-local ledger's per-series maps. The
+// model label arrives from requests, not only from configured chains, so a
+// stream of unique names would otherwise grow attempts/firstOutput (and the
+// /metrics output) forever. Far above any configured chain fan-out.
+const maxLedgerSeries = 16384
+
 // New returns an empty ledger.
 func New() *Ledger {
 	return &Ledger{
-		buckets:     make(map[bucketKey]Bucket),
-		attempts:    make(map[attemptKey]int64),
-		firstOutput: make(map[firstOutputKey]*firstOutputHist),
+		buckets:              make(map[bucketKey]Bucket),
+		attempts:             make(map[attemptKey]int64),
+		maxAttemptSeries:     maxLedgerSeries,
+		firstOutput:          make(map[firstOutputKey]*firstOutputHist),
+		maxFirstOutputSeries: maxLedgerSeries,
 	}
 }
 
@@ -220,7 +236,9 @@ func (l *Ledger) recordAttemptLocked(alias string, event smolllm.RequestEvent) {
 		phase:     phase,
 		streaming: event.Streaming,
 	}
-	l.attempts[key]++
+	if _, ok := l.attempts[key]; ok || len(l.attempts) < l.maxAttemptSeries {
+		l.attempts[key]++
+	}
 
 	// Only successful attempts contribute first-token latency: a timeout's
 	// "latency" is the budget itself, already visible as an outcome, and
@@ -232,6 +250,9 @@ func (l *Ledger) recordAttemptLocked(alias string, event smolllm.RequestEvent) {
 		}
 		hist := l.firstOutput[fk]
 		if hist == nil {
+			if len(l.firstOutput) >= l.maxFirstOutputSeries {
+				return
+			}
 			hist = &firstOutputHist{Counts: make([]int64, len(firstOutputBounds)+1)}
 			l.firstOutput[fk] = hist
 		}
