@@ -172,11 +172,12 @@ func scrapeMetrics(t *testing.T, router *httptest.Server) string {
 }
 
 var openedDoom = regexp.MustCompile(
-	`smolllm_account_circuit_transitions_total\{provider="doom",account="([0-9a-f]{12})",transition="opened"\} 1\n`)
+	`smolllm_account_circuit_transitions_total\{provider="doom",account="([0-9a-f]{12})",model="a",transition="opened"\} 1\n`)
 
-// One process-wide breaker serves every chat call: a 14019 on doom/a skips
-// doom/b in the same request, later requests (streaming or not, any alias)
-// skip doom entirely, and the metrics say so without touching attempt counts.
+// One process-wide breaker serves every chat call: a 14019 on doom/a opens
+// only the doom account+model-a pair, the sibling doom/b keeps answering
+// every call (streaming or not, any alias), and the metrics say so without
+// touching attempt counts.
 func TestAccountBreakerIsSharedAcrossChatCallsAndAliases(t *testing.T) {
 	doom := newFakeProvider(t, "DOOM", doomKey)
 	zai := newFakeProvider(t, "ZAI", zaiKey)
@@ -194,12 +195,12 @@ func TestAccountBreakerIsSharedAcrossChatCallsAndAliases(t *testing.T) {
 	}{{"bot", false}, {"bot", true}, {"other", false}, {"other", true}} {
 		status, model, text := chatText(t, router, call.alias, call.stream)
 		require.Equal(t, http.StatusOK, status, "call %d", i)
-		assert.Equal(t, "zai/c", model, "call %d", i)
-		assert.Equal(t, "other provider", text, "call %d", i)
+		assert.Equal(t, "doom/b", model, "call %d", i)
+		assert.Equal(t, "same account", text, "call %d", i)
 	}
-	assert.Equal(t, 1, doom.callsTo("a"), "only the first request may reach the exhausted account")
-	assert.Equal(t, 0, doom.callsTo("b"), "no request may reach another model on the exhausted account")
-	assert.Equal(t, 4, zai.callsTo("c"))
+	assert.Equal(t, 1, doom.callsTo("a"), "only the quota-rejected model is circuit-open")
+	assert.Equal(t, 4, doom.callsTo("b"), "the sibling model on the same account keeps serving")
+	assert.Equal(t, 0, zai.callsTo("c"))
 
 	out := scrapeMetrics(t, router)
 	m := openedDoom.FindStringSubmatch(out)
@@ -209,29 +210,26 @@ func TestAccountBreakerIsSharedAcrossChatCallsAndAliases(t *testing.T) {
 		"# TYPE smolllm_account_circuit_transitions_total counter",
 		"# TYPE smolllm_account_circuit_skips_total counter",
 		"# TYPE smolllm_account_circuit_state gauge",
-		`smolllm_account_circuit_skips_total{alias="bot",provider="doom",account="` + acct + `",model="b",reason="exhausted_in_request"} 1`,
 		`smolllm_account_circuit_skips_total{alias="bot",provider="doom",account="` + acct + `",model="a",reason="circuit_open"} 1`,
-		`smolllm_account_circuit_skips_total{alias="bot",provider="doom",account="` + acct + `",model="b",reason="circuit_open"} 1`,
-		`smolllm_account_circuit_skips_total{alias="other",provider="doom",account="` + acct + `",model="b",reason="circuit_open"} 2`,
-		`smolllm_account_circuit_state{provider="doom",account="` + acct + `",state="open"} 1`,
-		`smolllm_account_circuit_state{provider="doom",account="` + acct + `",state="half_open"} 0`,
-		`smolllm_account_circuit_state{provider="doom",account="` + acct + `",state="closed"} 0`,
-		// Attempts stay attempts: one real doom/a failure, zai/c successes split
-		// by transport, and no attempt line at all for the never-called doom/b.
+		`smolllm_account_circuit_state{provider="doom",account="` + acct + `",model="a",state="open"} 1`,
+		`smolllm_account_circuit_state{provider="doom",account="` + acct + `",model="a",state="half_open"} 0`,
+		`smolllm_account_circuit_state{provider="doom",account="` + acct + `",model="a",state="closed"} 0`,
+		// Attempts stay attempts: one real doom/a failure and four doom/b
+		// successes split by transport; skips never touch this ledger.
 		`smolllm_attempts_total{alias="bot",provider="doom",model="a",outcome="error",phase="",streaming="true"} 1`,
-		`smolllm_attempts_total{alias="bot",provider="zai",model="c",outcome="ok",phase="",streaming="true"} 2`,
-		`smolllm_attempts_total{alias="other",provider="zai",model="c",outcome="ok",phase="",streaming="true"} 2`,
+		`smolllm_attempts_total{alias="bot",provider="doom",model="b",outcome="ok",phase="",streaming="true"} 2`,
+		`smolllm_attempts_total{alias="other",provider="doom",model="b",outcome="ok",phase="",streaming="true"} 2`,
 	} {
 		assert.Contains(t, out, want+"\n")
 	}
-	assert.NotContains(t, out, `provider="doom",model="b"`, "a skipped leg must not count as an attempt")
+	assert.NotContains(t, out, `reason="exhausted_in_request"`, "the sibling model is attempted, not skipped")
 	assert.NotContains(t, out, "smolllm_account_circuit_fail_open_total{")
 	for _, secret := range []string{doomKey, zaiKey, "account-secret"} {
 		assert.NotContains(t, out, secret)
 	}
 }
 
-// When every account is open the chain fails open; a leg that then succeeds
+// When every pair is open the chain fails open; a leg that then succeeds
 // closes its circuit, and the state gauge follows.
 func TestAccountBreakerFailOpenAndCloseAreObservable(t *testing.T) {
 	doom := newFakeProvider(t, "DOOM", doomKey)
@@ -255,7 +253,7 @@ func TestAccountBreakerFailOpenAndCloseAreObservable(t *testing.T) {
 	m := openedDoom.FindStringSubmatch(out)
 	require.NotNil(t, m, "no opened transition for doom in:\n%s", out)
 	zaiOpened := regexp.MustCompile(
-		`smolllm_account_circuit_transitions_total\{provider="zai",account="([0-9a-f]{12})",transition="opened"\} 1\n`)
+		`smolllm_account_circuit_transitions_total\{provider="zai",account="([0-9a-f]{12})",model="c",transition="opened"\} 1\n`)
 	z := zaiOpened.FindStringSubmatch(out)
 	require.NotNil(t, z, "no opened transition for zai in:\n%s", out)
 	doomAcct, zaiAcct := m[1], z[1]
@@ -263,15 +261,15 @@ func TestAccountBreakerFailOpenAndCloseAreObservable(t *testing.T) {
 		"# TYPE smolllm_account_circuit_fail_open_total counter",
 		`smolllm_account_circuit_fail_open_total{alias="bot",provider="doom",account="` + doomAcct + `",model="a"} 1`,
 		`smolllm_account_circuit_fail_open_total{alias="bot",provider="zai",account="` + zaiAcct + `",model="c"} 1`,
-		`smolllm_account_circuit_transitions_total{provider="zai",account="` + zaiAcct + `",transition="closed"} 1`,
-		`smolllm_account_circuit_state{provider="doom",account="` + doomAcct + `",state="open"} 1`,
-		`smolllm_account_circuit_state{provider="zai",account="` + zaiAcct + `",state="closed"} 1`,
-		`smolllm_account_circuit_state{provider="zai",account="` + zaiAcct + `",state="open"} 0`,
+		`smolllm_account_circuit_transitions_total{provider="zai",account="` + zaiAcct + `",model="c",transition="closed"} 1`,
+		`smolllm_account_circuit_state{provider="doom",account="` + doomAcct + `",model="a",state="open"} 1`,
+		`smolllm_account_circuit_state{provider="zai",account="` + zaiAcct + `",model="c",state="closed"} 1`,
+		`smolllm_account_circuit_state{provider="zai",account="` + zaiAcct + `",model="c",state="open"} 0`,
 	} {
 		assert.Contains(t, out, want+"\n")
 	}
-	// A fail-open re-confirmation of an already-open account is not a new open.
-	assert.NotContains(t, out, `provider="doom",account="`+doomAcct+`",transition="opened"} 2`)
+	// A fail-open re-confirmation of an already-open pair is not a new open.
+	assert.NotContains(t, out, `provider="doom",account="`+doomAcct+`",model="a",transition="opened"} 2`)
 }
 
 // A JSON-bodied 429 with no recognized account code stays model-local (the

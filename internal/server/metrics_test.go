@@ -98,14 +98,14 @@ func TestAccountMetricsRenderProbesAndHalfOpenState(t *testing.T) {
 		SkipReason: smolllm.SkipCircuitOpen,
 	})
 	var sb strings.Builder
-	m.write(&sb, []smolllm.AccountCircuit{{Provider: "doom", Account: "0123456789ab", State: smolllm.CircuitHalfOpen}})
+	m.write(&sb, []smolllm.AccountCircuit{{Provider: "doom", Account: "0123456789ab", ModelName: "a", State: smolllm.CircuitHalfOpen}})
 	out := sb.String()
 
 	assert.Contains(t, out, "# TYPE smolllm_account_circuit_probes_total counter\n")
 	assert.Contains(t, out, `smolllm_account_circuit_probes_total{alias="agent",provider="doom",account="0123456789ab",model="a"} 1`+"\n")
 	assert.Contains(t, out, `smolllm_account_circuit_skips_total{alias="agent",provider="zai",account="ba9876543210",model="q\"x",reason="circuit_open"} 1`+"\n")
-	assert.Contains(t, out, `smolllm_account_circuit_state{provider="doom",account="0123456789ab",state="half_open"} 1`+"\n")
-	assert.Contains(t, out, `smolllm_account_circuit_state{provider="doom",account="0123456789ab",state="open"} 0`+"\n")
-	assert.Contains(t, out, `smolllm_account_circuit_state{provider="zai",account="ba9876543210",state="closed"} 1`+"\n")
+	assert.Contains(t, out, `smolllm_account_circuit_state{provider="doom",account="0123456789ab",model="a",state="half_open"} 1`+"\n")
+	assert.Contains(t, out, `smolllm_account_circuit_state{provider="doom",account="0123456789ab",model="a",state="open"} 0`+"\n")
+	assert.Contains(t, out, `smolllm_account_circuit_state{provider="zai",account="ba9876543210",model="q\"x",state="closed"} 1`+"\n")
 	assert.NotContains(t, out, "smolllm_account_circuit_transitions_total")
 }

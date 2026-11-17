@@ -20,20 +20,21 @@ import (
 // the same requested-model label smolllm_attempts_total already carries.
 type accountMetrics struct {
 	mu sync.Mutex
-	// transitions is keyed by account and opened/closed. The circuit is shared
-	// by every alias, so an alias label here would describe the request that
-	// happened to trip it, not the circuit.
+	// transitions is keyed by account+model and opened/closed. The circuit is
+	// shared by every alias, so an alias label here would describe the request
+	// that happened to trip it, not the circuit; the model is part of the
+	// circuit key since quota rejections are per account+model.
 	transitions map[accountTransitionKey]int64
 	skips       map[accountSkipKey]int64
 	probes      map[accountLegKey]int64
 	failOpens   map[accountLegKey]int64
 	// unrecognized429 counts structured 429s whose code the breaker does not
-	// know. They stay model-local; this is how a new account-scoped code
-	// becomes visible before anyone is tempted to match message text.
+	// know. They stay model-local; this is how a new quota code becomes
+	// visible before anyone is tempted to match message text.
 	unrecognized429 map[accountLegKey]int64
-	// seen lists every account the breaker has reported on, so the state gauge
-	// can show closed accounts too instead of only the ones currently open.
-	seen map[accountID]struct{}
+	// seen lists every account+model pair the breaker has reported on, so the
+	// state gauge can show closed pairs too instead of only the open ones.
+	seen map[accountLegID]struct{}
 }
 
 type accountID struct {
@@ -41,8 +42,14 @@ type accountID struct {
 	account  string
 }
 
-type accountTransitionKey struct {
+// accountLegID is the circuit identity: one credential plus one model.
+type accountLegID struct {
 	accountID
+	model string
+}
+
+type accountTransitionKey struct {
+	accountLegID
 	transition string
 }
 
@@ -64,7 +71,7 @@ func newAccountMetrics() *accountMetrics {
 		probes:          map[accountLegKey]int64{},
 		failOpens:       map[accountLegKey]int64{},
 		unrecognized429: map[accountLegKey]int64{},
-		seen:            map[accountID]struct{}{},
+		seen:            map[accountLegID]struct{}{},
 	}
 }
 
@@ -74,14 +81,14 @@ func (m *accountMetrics) hook(alias string) func(smolllm.AccountEvent) {
 }
 
 func (m *accountMetrics) record(alias string, e smolllm.AccountEvent) {
-	id := accountID{provider: e.Provider, account: e.Account}
-	leg := accountLegKey{alias: alias, accountID: id, model: e.ModelName}
+	id := accountLegID{accountID: accountID{provider: e.Provider, account: e.Account}, model: e.ModelName}
+	leg := accountLegKey{alias: alias, accountID: id.accountID, model: e.ModelName}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seen[id] = struct{}{}
 	switch e.Kind {
 	case smolllm.AccountOpened, smolllm.AccountClosed:
-		m.transitions[accountTransitionKey{accountID: id, transition: string(e.Kind)}]++
+		m.transitions[accountTransitionKey{accountLegID: id, transition: string(e.Kind)}]++
 	case smolllm.AccountSkipped:
 		m.skips[accountSkipKey{accountLegKey: leg, reason: e.SkipReason}]++
 	case smolllm.AccountProbing:
@@ -106,9 +113,9 @@ func (m *accountMetrics) write(w io.Writer, circuits []smolllm.AccountCircuit) {
 	var b strings.Builder
 
 	writeFamily(&b, "smolllm_account_circuit_transitions_total", "counter",
-		"Account circuit transitions: opened on a structured quota rejection, closed on a later success.",
+		"Account circuit transitions: opened on a structured quota rejection, closed on a later success. One series per account+model pair.",
 		sortedSeries(m.transitions, func(k accountTransitionKey) string {
-			return accountLabels(k.accountID) + fmt.Sprintf(",transition=\"%s\"", escapeLabel(k.transition))
+			return legIDLabels(k.accountLegID) + fmt.Sprintf(",transition=\"%s\"", escapeLabel(k.transition))
 		}))
 	writeFamily(&b, "smolllm_account_circuit_skips_total", "counter",
 		"Chain legs skipped without an upstream call because their account was exhausted.",
@@ -125,14 +132,14 @@ func (m *accountMetrics) write(w io.Writer, circuits []smolllm.AccountCircuit) {
 		"HTTP 429s with a JSON body but no recognized account code; treated as model-local.",
 		sortedSeries(m.unrecognized429, legLabels))
 
-	states := make(map[accountID]string, len(m.seen)+len(circuits))
+	states := make(map[accountLegID]string, len(m.seen)+len(circuits))
 	for id := range m.seen {
 		states[id] = "closed"
 	}
 	for _, c := range circuits {
-		states[accountID{provider: c.Provider, account: c.Account}] = string(c.State)
+		states[accountLegID{accountID: accountID{provider: c.Provider, account: c.Account}, model: c.ModelName}] = string(c.State)
 	}
-	ids := make([]accountID, 0, len(states))
+	ids := make([]accountLegID, 0, len(states))
 	for id := range states {
 		ids = append(ids, id)
 	}
@@ -140,10 +147,13 @@ func (m *accountMetrics) write(w io.Writer, circuits []smolllm.AccountCircuit) {
 		if ids[i].provider != ids[j].provider {
 			return ids[i].provider < ids[j].provider
 		}
-		return ids[i].account < ids[j].account
+		if ids[i].account != ids[j].account {
+			return ids[i].account < ids[j].account
+		}
+		return ids[i].model < ids[j].model
 	})
 	if len(ids) > 0 {
-		b.WriteString("# HELP smolllm_account_circuit_state Current account circuit state, one-hot over closed/open/half_open.\n")
+		b.WriteString("# HELP smolllm_account_circuit_state Current account+model circuit state, one-hot over closed/open/half_open.\n")
 		b.WriteString("# TYPE smolllm_account_circuit_state gauge\n")
 	}
 	for _, id := range ids {
@@ -152,7 +162,7 @@ func (m *accountMetrics) write(w io.Writer, circuits []smolllm.AccountCircuit) {
 			if states[id] == state {
 				value = 1
 			}
-			fmt.Fprintf(&b, "smolllm_account_circuit_state{%s,state=\"%s\"} %d\n", accountLabels(id), state, value)
+			fmt.Fprintf(&b, "smolllm_account_circuit_state{%s,state=\"%s\"} %d\n", legIDLabels(id), state, value)
 		}
 	}
 
@@ -185,6 +195,10 @@ func writeFamily(b *strings.Builder, name, kind, help string, rows []series) {
 
 func accountLabels(id accountID) string {
 	return fmt.Sprintf("provider=\"%s\",account=\"%s\"", escapeLabel(id.provider), escapeLabel(id.account))
+}
+
+func legIDLabels(id accountLegID) string {
+	return fmt.Sprintf("%s,model=\"%s\"", accountLabels(id.accountID), escapeLabel(id.model))
 }
 
 func legLabels(k accountLegKey) string {
