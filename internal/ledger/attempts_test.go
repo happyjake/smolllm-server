@@ -156,3 +156,28 @@ func TestAttemptSeriesAreCapped(t *testing.T) {
 		alias: "agent", provider: "doom", model: "unique-0", outcome: OutcomeOK,
 	}], "an existing series keeps counting past the cap")
 }
+
+// Day buckets are capped too: unique requested models past the cap drop
+// their day-bucket instead of growing the map and every Snapshot copy.
+func TestDayBucketsAreCapped(t *testing.T) {
+	t.Parallel()
+
+	l := New()
+	l.maxBucketSeries = 3
+	for i := 0; i < 10; i++ {
+		l.Record("agent", smolllm.RequestEvent{
+			Usage:     smolllm.Usage{Provider: "doom", ModelName: fmt.Sprintf("unique-%d", i)},
+			Timestamp: time.Now(),
+		})
+	}
+	assert.Len(t, l.buckets, 3, "no new day-bucket past the cap")
+	assert.Len(t, l.Snapshot(), 3, "/stats output stays bounded")
+
+	l.Record("agent", smolllm.RequestEvent{
+		Usage:     smolllm.Usage{Provider: "doom", ModelName: "unique-0"},
+		Timestamp: time.Now(),
+	})
+	assert.EqualValues(t, 2, l.buckets[bucketKey{
+		day: time.Now().UTC().Format(time.DateOnly), alias: "agent", provider: "doom", model: "unique-0",
+	}].Requests, "an existing bucket keeps counting past the cap")
+}

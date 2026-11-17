@@ -67,6 +67,10 @@ type Ledger struct {
 	// maxFirstOutputSeries bounds len(firstOutput) for the same reason as
 	// maxAttemptSeries. A field so tests can shrink it.
 	maxFirstOutputSeries int
+	// maxBucketSeries bounds len(buckets): unique requested models arrive
+	// from requests too, and day-pruning bounds retention in time, not the
+	// base the way in. A field so tests can shrink it.
+	maxBucketSeries int
 }
 
 // Attempt outcomes. A queued leg is separated from a broken one on purpose:
@@ -125,6 +129,7 @@ func New() *Ledger {
 		maxAttemptSeries:     maxLedgerSeries,
 		firstOutput:          make(map[firstOutputKey]*firstOutputHist),
 		maxFirstOutputSeries: maxLedgerSeries,
+		maxBucketSeries:      maxLedgerSeries,
 	}
 }
 
@@ -148,6 +153,13 @@ func (l *Ledger) Record(alias string, event smolllm.RequestEvent) {
 		model:    event.ModelName,
 	}
 	bucket := l.buckets[key]
+	if bucket.Requests == 0 && len(l.buckets) >= l.maxBucketSeries {
+		// An unseen (day, alias, provider, model) past the cap drops its
+		// day-bucket instead of growing the map and every Snapshot copy; the
+		// attempt counters below still apply their own caps.
+		l.recordAttemptLocked(alias, event)
+		return
+	}
 	bucket.Day = key.day
 	bucket.Alias = key.alias
 	bucket.Provider = key.provider

@@ -17,6 +17,10 @@ func (h *handlers) chat(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
+	if err := validateModelName(req.Model); err != nil {
+		badRequest(w, err.Error())
+		return
+	}
 
 	prompt, opts, err := llm.BuildOptions(&req, h.cfg().ResolveModel, h.cfg().Server.RequestTimeout, h.cfg().Server.FirstOutputTimeout)
 	if err != nil {

@@ -20,6 +20,10 @@ func (h *handlers) embeddings(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "model is required")
 		return
 	}
+	if err := validateModelName(req.Model); err != nil {
+		badRequest(w, err.Error())
+		return
+	}
 	inputs, err := decodeEmbeddingInput(req.Input)
 	if err != nil {
 		badRequest(w, err.Error())

@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -33,6 +35,28 @@ func (h *handlers) health(w http.ResponseWriter, _ *http.Request) {
 // badRequest writes an OpenAI-style 400.
 func badRequest(w http.ResponseWriter, message string) {
 	apierr.Write(w, http.StatusBadRequest, "invalid_request", "invalid_request_error", message)
+}
+
+// maxRequestModelLen bounds the requested model string at the door. That
+// string becomes labels in the usage ledger, the account breaker and the
+// /metrics and /stats output: downstream maps cap how many series may exist,
+// and this caps how many bytes one series may carry. Real names — aliases or
+// provider/model strings — are far shorter.
+const maxRequestModelLen = 256
+
+// validateModelName rejects requested models that can only be hostile or
+// malformed: absurdly long, or carrying control characters (a NUL would
+// corrupt account-breaker key parsing, the rest only poison output).
+func validateModelName(model string) error {
+	if len(model) > maxRequestModelLen {
+		return fmt.Errorf("model name longer than %d bytes", maxRequestModelLen)
+	}
+	for i := 0; i < len(model); i++ {
+		if model[i] < 0x20 || model[i] == 0x7f {
+			return errors.New("model name contains control characters")
+		}
+	}
+	return nil
 }
 
 // upstreamError writes an OpenAI-style 502 — provider call failed.
