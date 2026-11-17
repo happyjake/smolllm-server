@@ -34,8 +34,19 @@ type accountMetrics struct {
 	unrecognized429 map[accountLegKey]int64
 	// seen lists every account+model pair the breaker has reported on, so the
 	// state gauge can show closed pairs too instead of only the open ones.
+	// Model names arrive from requests (not only configured chains), so seen
+	// is capped: pairs past the cap simply have no closed series. The circuit
+	// events themselves stay bounded by the library's maxAccountCircuits.
 	seen map[accountLegID]struct{}
+	// maxSeen caps len(seen); a field so tests can shrink it. Past the cap a
+	// pair gets no closed gauge series — it is closed either way.
+	maxSeen int
 }
+
+// maxSeenPairs bounds the state-gauge pair set: comfortably above the
+// breaker's own maxAccountCircuits (every circuit can appear here, times the
+// configured aliases), far below anything that could grow with requests.
+const maxSeenPairs = 8192
 
 type accountID struct {
 	provider string
@@ -72,6 +83,7 @@ func newAccountMetrics() *accountMetrics {
 		failOpens:       map[accountLegKey]int64{},
 		unrecognized429: map[accountLegKey]int64{},
 		seen:            map[accountLegID]struct{}{},
+		maxSeen:         maxSeenPairs,
 	}
 }
 
@@ -85,7 +97,9 @@ func (m *accountMetrics) record(alias string, e smolllm.AccountEvent) {
 	leg := accountLegKey{alias: alias, accountID: id.accountID, model: e.ModelName}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.seen[id] = struct{}{}
+	if _, ok := m.seen[id]; ok || len(m.seen) < m.maxSeen {
+		m.seen[id] = struct{}{}
+	}
 	switch e.Kind {
 	case smolllm.AccountOpened, smolllm.AccountClosed:
 		m.transitions[accountTransitionKey{accountLegID: id, transition: string(e.Kind)}]++

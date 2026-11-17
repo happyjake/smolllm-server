@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -108,4 +109,25 @@ func TestAccountMetricsRenderProbesAndHalfOpenState(t *testing.T) {
 	assert.Contains(t, out, `smolllm_account_circuit_state{provider="doom",account="0123456789ab",model="a",state="open"} 0`+"\n")
 	assert.Contains(t, out, `smolllm_account_circuit_state{provider="zai",account="ba9876543210",model="q\"x",state="closed"} 1`+"\n")
 	assert.NotContains(t, out, "smolllm_account_circuit_transitions_total")
+}
+
+// Model names arrive from requests, so the state-gauge pair set is capped:
+// pairs past the cap simply have no closed series, and the map never grows
+// with request diversity.
+func TestSeenPairsAreCapped(t *testing.T) {
+	t.Parallel()
+
+	m := newAccountMetrics()
+	m.maxSeen = 3
+	for i := 0; i < 10; i++ {
+		m.hook("agent")(smolllm.AccountEvent{
+			Kind: smolllm.AccountUnrecognized429, Provider: "doom",
+			Account: fmt.Sprintf("%012x", i), ModelName: "m",
+		})
+	}
+	assert.Len(t, m.seen, 3, "seen never exceeds its cap")
+
+	var sb strings.Builder
+	m.write(&sb, nil)
+	assert.Equal(t, 3*len(circuitStates), strings.Count(sb.String(), "smolllm_account_circuit_state{"), "one three-state series per remembered pair")
 }

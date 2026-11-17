@@ -268,11 +268,11 @@ the numbers.
 | --- | --- |
 | `smolllm_attempts_total{alias,provider,model,outcome,phase}` | outcome = `ok` / `first_output_timeout` / `error` / `canceled` |
 | `smolllm_attempt_first_output_seconds` | time to first token, successful attempts only |
-| `smolllm_account_circuit_transitions_total{provider,account,transition}` | `opened` / `closed` account circuits (`account` = 12-hex credential fingerprint, never the key) |
+| `smolllm_account_circuit_transitions_total{provider,account,model,transition}` | `opened` / `closed` account+model circuits (`account` = 12-hex credential fingerprint, never the key) |
 | `smolllm_account_circuit_skips_total{alias,provider,account,model,reason}` | legs skipped with no upstream call; reason = `circuit_open` / `exhausted_in_request` |
 | `smolllm_account_circuit_probes_total{alias,provider,account,model}` | half-open probes after a cooldown |
 | `smolllm_account_circuit_fail_open_total{alias,provider,account,model}` | open-account legs tried because nothing else succeeded |
-| `smolllm_account_circuit_state{provider,account,state}` | one-hot `closed` / `open` / `half_open` per account seen since start |
+| `smolllm_account_circuit_state{provider,account,model,state}` | one-hot `closed` / `open` / `half_open` per account+model pair seen since start (bounded; see account_metrics.go) |
 | `smolllm_unrecognized_structured_429_total{alias,provider,account,model}` | JSON-bodied 429s without a known account code (model-local) |
 | `smolllm_exporter_scrape_ok` | 1 if the last upstream scrape worked |
 
