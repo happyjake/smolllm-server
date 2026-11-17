@@ -35,12 +35,17 @@ type accountMetrics struct {
 	// seen lists every account+model pair the breaker has reported on, so the
 	// state gauge can show closed pairs too instead of only the open ones.
 	// Model names arrive from requests (not only configured chains), so seen
-	// is capped: pairs past the cap simply have no closed series. The circuit
-	// events themselves stay bounded by the library's maxAccountCircuits.
+	// is capped: pairs past the cap simply have no closed series.
 	seen map[accountLegID]struct{}
 	// maxSeen caps len(seen); a field so tests can shrink it. Past the cap a
 	// pair gets no closed gauge series — it is closed either way.
 	maxSeen int
+	// maxSeries caps every counter map below. The library bounds live
+	// circuits, but eviction lets unique model names rotate through them
+	// forever, so opened/closed (and any skip/probe/fail-open/unrecognized
+	// series tied to a pair) can still grow without bound over time. At cap,
+	// a series that does not already exist is dropped rather than grown.
+	maxSeries int
 }
 
 // maxSeenPairs bounds the state-gauge pair set: comfortably above the
@@ -84,6 +89,16 @@ func newAccountMetrics() *accountMetrics {
 		unrecognized429: map[accountLegKey]int64{},
 		seen:            map[accountLegID]struct{}{},
 		maxSeen:         maxSeenPairs,
+		maxSeries:       maxSeenPairs,
+	}
+}
+
+// bump increments one bounded counter series. At cap, an existing series
+// keeps counting and an unseen one is dropped: under pathological model-name
+// diversity telemetry degrades instead of accumulating forever.
+func bump[K comparable](m map[K]int64, k K, cap int) {
+	if _, ok := m[k]; ok || len(m) < cap {
+		m[k]++
 	}
 }
 
@@ -102,15 +117,15 @@ func (m *accountMetrics) record(alias string, e smolllm.AccountEvent) {
 	}
 	switch e.Kind {
 	case smolllm.AccountOpened, smolllm.AccountClosed:
-		m.transitions[accountTransitionKey{accountLegID: id, transition: string(e.Kind)}]++
+		bump(m.transitions, accountTransitionKey{accountLegID: id, transition: string(e.Kind)}, m.maxSeries)
 	case smolllm.AccountSkipped:
-		m.skips[accountSkipKey{accountLegKey: leg, reason: e.SkipReason}]++
+		bump(m.skips, accountSkipKey{accountLegKey: leg, reason: e.SkipReason}, m.maxSeries)
 	case smolllm.AccountProbing:
-		m.probes[leg]++
+		bump(m.probes, leg, m.maxSeries)
 	case smolllm.AccountFailOpen:
-		m.failOpens[leg]++
+		bump(m.failOpens, leg, m.maxSeries)
 	case smolllm.AccountUnrecognized429:
-		m.unrecognized429[leg]++
+		bump(m.unrecognized429, leg, m.maxSeries)
 	}
 }
 

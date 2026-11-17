@@ -131,3 +131,32 @@ func TestSeenPairsAreCapped(t *testing.T) {
 	m.write(&sb, nil)
 	assert.Equal(t, 3*len(circuitStates), strings.Count(sb.String(), "smolllm_account_circuit_state{"), "one three-state series per remembered pair")
 }
+
+// Counter series are capped too: the library bounds live circuits, but
+// eviction lets unique model names rotate through them forever, so a stream
+// of opened transitions must stop creating series past the cap while an
+// existing series keeps counting.
+func TestCounterSeriesAreCapped(t *testing.T) {
+	t.Parallel()
+
+	m := newAccountMetrics()
+	m.maxSeries = 3
+	for i := 0; i < 10; i++ {
+		m.hook("agent")(smolllm.AccountEvent{
+			Kind: smolllm.AccountOpened, Provider: "doom",
+			Account: fmt.Sprintf("%012x", i), ModelName: "m",
+		})
+	}
+	assert.Len(t, m.transitions, 3, "no new series past the cap")
+
+	first := accountTransitionKey{accountLegID: accountLegID{
+		accountID: accountID{provider: "doom", account: fmt.Sprintf("%012x", 0)},
+		model:     "m",
+	}, transition: "opened"}
+	assert.Equal(t, int64(1), m.transitions[first])
+	m.hook("agent")(smolllm.AccountEvent{
+		Kind: smolllm.AccountOpened, Provider: "doom",
+		Account: fmt.Sprintf("%012x", 0), ModelName: "m",
+	})
+	assert.Equal(t, int64(2), m.transitions[first], "an existing series keeps counting past the cap")
+}
